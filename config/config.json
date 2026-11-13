@@ -69,6 +69,34 @@
     "enabled": false,
     "fail_on_mismatch": false
   },
+  "pipeline": {
+    "jobs": [
+      {
+        "task_type": "stage",
+        "name": "jeppesen_processing",
+        "module": "stage_jeppesen",
+        "gates_next": true
+      },
+      {
+        "task_type": "stage",
+        "name": "bts_processing",
+        "module": "stage_bts",
+        "gates_next": true
+      },
+      {
+        "task_type": "stage",
+        "name": "innovata_processing",
+        "module": "stage_innovata",
+        "gates_next": false
+      },
+      {
+        "task_type": "stage",
+        "name": "olson_timezone_processing",
+        "module": "stage_olson",
+        "gates_next": false
+      }
+    ]
+  },
   "joins": {
     "airport_code": {
       "jeppesen_column": "IATA_ARPT_CDE",

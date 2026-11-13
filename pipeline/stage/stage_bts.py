@@ -2,7 +2,7 @@ import logging
 import sys
 from pathlib import Path
 
-"""Stage BTS enrichment (class-based, utils shared). Missing stays inside BTS STG (SRC_LOC)."""
+"""Stage BTS enrichment (class-based, utils shared). Missing stays inside BTS STG."""
 import pandas as pd
 
 try:
@@ -117,8 +117,24 @@ def load_bts(bts_csv: Path = BTS_CSV) -> pd.DataFrame:
 
 
 def load_airport_stg(airport_stg: Path = AIRPORT_STG) -> pd.DataFrame:
-    log.info("Loading Jeppesen staging %s", airport_stg)
-    df = pd.read_csv(airport_stg, dtype=str, keep_default_na=False)
+    from utils.common import latest_stage_file
+    # timestamped outputs: pick latest LOC_AIRPORT_STG_*.csv, fallback fixed path
+    latest = latest_stage_file("output/stage/LOC_AIRPORT_STG_*.csv")
+    # exclude jep_only backups from candidate? latest_stage_file returns max mtime;
+    # jep_only backup written just before overwrite in same run could be newer –
+    # prefer non-backup files
+    try:
+        from pathlib import Path as _P
+        from utils.common import BASE_DIR
+        cands = sorted((BASE_DIR / "output" / "stage").glob("LOC_AIRPORT_STG_*.csv"))
+        cands = [p for p in cands if "jep_only" not in p.name]
+        if cands:
+            latest = max(cands, key=lambda p: p.stat().st_mtime)
+    except (OSError, ValueError):
+        pass
+    src = latest if latest is not None else airport_stg
+    log.info("Loading Jeppesen staging %s", src)
+    df = pd.read_csv(src, dtype=str, keep_default_na=False)
     if LEFT_KEY not in df.columns:
         raise ValueError(f"Airport STG missing join key: {LEFT_KEY}")
     log.info("Airport STG rows=%d", len(df))
@@ -150,36 +166,36 @@ def _jep_decimal_from_row(r, col: str) -> float | None:
 def resolve_final_coords(merged: pd.DataFrame, errors) -> pd.DataFrame:
     final_lat: list[str] = []
     final_lon: list[str] = []
-    src_loc: list[str] = []
+    bts_cnt = 0
     fallback_cnt = 0
     fail_cnt = 0
     for _, r in merged.iterrows():
         key = r.get(Constants.COL_PRODUCT_ID, "") or r.get(LEFT_KEY, "")
         lat, lon, _ = errors.check(
             r.get(Constants.COL_BTS_LAT, ""), r.get(Constants.COL_BTS_LON, ""),
-            source="BTS", record_id=key, tag=Constants.TAG_AIRPORT)
+            source="BTS", record_id=key, tag="airport")
         if lat is not None and lon is not None:
             final_lat.append(str(lat))
             final_lon.append(str(lon))
-            src_loc.append(Constants.SRC_BTS)
+            bts_cnt += 1
         else:
             jlat = _jep_decimal_from_row(r, Constants.COL_JEP_DEC_LAT)
             jlon = _jep_decimal_from_row(r, Constants.COL_JEP_DEC_LON)
             if jlat is not None and jlon is not None:
                 final_lat.append(str(jlat))
                 final_lon.append(str(jlon))
-                src_loc.append(Constants.SRC_JEPP)
                 fallback_cnt += 1
             else:
                 final_lat.append("")
                 final_lon.append("")
-                src_loc.append(Constants.SRC_FAIL)
                 fail_cnt += 1
     merged[Constants.COL_FINAL_LAT] = final_lat
     merged[Constants.COL_FINAL_LON] = final_lon
-    merged[Constants.COL_SRC_LOC] = src_loc
-    log.info("FINAL coords: bts=%d jepp=%d fail=%d (SRC_LOC)",
-             int((merged[Constants.COL_SRC_LOC] == Constants.SRC_BTS).sum()), fallback_cnt, fail_cnt)
+    log.info("FINAL coords: matched=%d fallback=%d fail=%d", bts_cnt, fallback_cnt, fail_cnt)
+    try:
+        merged.attrs["src_counts"] = {"matched": bts_cnt, "fallback": fallback_cnt, "fail": fail_cnt}
+    except (AttributeError, ValueError, TypeError):
+        pass
     return merged
 
 
@@ -259,7 +275,9 @@ class BTSEnricher:
     def __init__(self, config: dict | None = None):
         self.config = config or _CONFIG
 
-    def run(self) -> pd.DataFrame:
+    def run(self, batch_id: str | None = None) -> pd.DataFrame:
+        from utils.common import run_batch_id, timestamped_path
+        batch_id = batch_id or run_batch_id()
         setup_logging()
         df_bts = load_bts(BTS_CSV)
         df_airport = load_airport_stg(AIRPORT_STG)
@@ -269,37 +287,74 @@ class BTSEnricher:
         merged = join_bts(df_airport, df_bts)
         merged = resolve_final_coords(merged, errors)
         merged = add_extra_columns(merged)
-        OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-        # BTS now overwrites LOC_AIRPORT_STG.csv itself: keep Jeppesen-only backup
-        if OUTPUT_CSV.resolve() == AIRPORT_STG.resolve():
-            try:
-                backup = OUTPUT_CSV.with_name("LOC_AIRPORT_STG.jep_only.csv")
-                df_airport.to_csv(backup, index=False)
-                log.info("Backed up Jeppesen-only %d rows -> %s", len(df_airport), backup)
-            except (OSError, ValueError) as e:
-                log.warning("Jep-only backup failed: %s", e)
-        merged.to_csv(OUTPUT_CSV, index=False)
-        log.info("Wrote %d rows (%d cols) -> %s", len(merged), len(merged.columns), OUTPUT_CSV)
+        # BATCHID datetime YYYYMMDD_HHMM (no sec), same run batch_id
+        merged["BATCHID"] = batch_id
+        cols = ["BATCHID"] + [c for c in merged.columns if c != "BATCHID"]
+        merged = merged[cols]
+        out_csv = timestamped_path(OUTPUT_CSV, batch_id)
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        # keep Jeppesen-only backup (timestamped)
+        try:
+            backup = out_csv.parent / f"{OUTPUT_CSV.stem}.jep_only_{batch_id}.csv"
+            df_airport.to_csv(backup, index=False)
+            log.info("Backed up Jeppesen-only %d rows -> %s", len(df_airport), backup)
+        except (OSError, ValueError) as e:
+            log.warning("Jep-only backup failed: %s", e)
+        merged.to_csv(out_csv, index=False)
+        log.info("Wrote %d rows (%d cols) -> %s", len(merged), len(merged.columns), out_csv)
         errors.save(APP.error_report, append=True)
         log.info(errors.summary("bts"))
         ignores.save(APP.ignore_report, append=True)
         log.info("IGNORES stage=bts count=%d", len(ignores))
         counts["bts_errors"] = len(errors)
-        if Constants.COL_SRC_LOC in merged.columns:
-            n_missing = int((merged[Constants.COL_SRC_LOC] == Constants.SRC_JEPP).sum())
-        else:
-            n_missing = 0
-        log.warning("Missing BTS lat/lon inside BTS STG (SRC_LOC=jepp): %d rows "
+        try:
+            _src = dict(getattr(merged, "attrs", {}).get("src_counts", {}))
+        except (AttributeError, ValueError, TypeError):
+            _src = {}
+        n_missing = int(_src.get("fallback", 0))
+        log.warning("Missing BTS lat/lon inside BTS STG (fallback): %d rows "
                     "(audit with/without=%s)", n_missing, counts)
         try:
             merged.attrs["counts"] = counts
+            merged.attrs["output"] = str(out_csv)
+            merged.attrs["batch_id"] = batch_id
         except (AttributeError, ValueError, TypeError) as e:
             log.warning("Could not attach audit counts to frame: %s", e)
         return merged
 
 
-def run() -> pd.DataFrame:
-    return BTSEnricher().run()
+def run(batch_id: str | None = None) -> pd.DataFrame:
+    return BTSEnricher().run(batch_id=batch_id)
+
+
+def metadata_rows(result, run_ts: str) -> list[dict]:
+    from utils.summary import StageSummary
+    merged = result
+    try:
+        _src = dict(getattr(merged, "attrs", {}).get("src_counts", {}))
+    except (AttributeError, ValueError, TypeError):
+        _src = {}
+    try:
+        counts = dict(getattr(merged, "attrs", {}).get("counts", {}))
+    except (AttributeError, ValueError, TypeError):
+        counts = {}
+    total = len(merged) if merged is not None else 0
+    success_n = int(_src.get("fallback", 0))
+    fail_n = int(_src.get("fail", 0))
+    bts_errors = int(counts.get("bts_errors", 0))
+    err, ign = "", str(APP.ignore_report)
+    try:
+        out = str(getattr(merged, "attrs", {}).get("output", str(APP.bts_output)))
+    except (AttributeError, ValueError, TypeError):
+        out = str(APP.bts_output)
+    return [
+        {"run_timestamp": run_ts, "status": "COMPLETED", "stage": "bts", "tag": "airport",
+         "summary": StageSummary.bts_airport(total, bts_errors),
+         "output": out, "error_report": err, "ignore_report": ign},
+        {"run_timestamp": run_ts, "status": "COMPLETED", "stage": "bts", "tag": "non-latlon",
+         "summary": StageSummary.bts_nonlatlon(counts, success_n, fail_n),
+         "output": out, "error_report": str(APP.error_report), "ignore_report": ign},
+    ]
 
 
 if __name__ == "__main__":

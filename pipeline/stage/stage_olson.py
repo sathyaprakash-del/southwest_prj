@@ -50,7 +50,9 @@ class OlsonLoader:
         self.config = config or _CONFIG
         self.olson = self.config.get("olson", _OLSON)
 
-    def run(self) -> pd.DataFrame:
+    def run(self, batch_id: str | None = None) -> pd.DataFrame:
+        from utils.common import run_batch_id, timestamped_path
+        batch_id = batch_id or run_batch_id()
         setup_logging()
         oc = self.olson
         cols = list(oc.get("columns", ["BATCHID", "ICAO_CDE", "OLSON_ID", "RAWOFFSET"]))
@@ -59,7 +61,7 @@ class OlsonLoader:
         olson_re = re.compile(oc.get("olson_id_pattern", r"^[A-Za-z_]+(/[A-Za-z0-9_+\-]+)*$"))
         raw_re = re.compile(oc.get("rawoffset_pattern", r"^-?\d+$"))
         batch_mode = oc.get("batch_id_mode", "run")
-        run_batch = datetime.now().strftime("%Y%j%H%M%S")
+        run_batch = batch_id
 
         if not OLSON_CSV.is_file():
             raise FileNotFoundError(f"Olson source missing: {OLSON_CSV}")
@@ -118,9 +120,12 @@ class OlsonLoader:
             rows.append({"BATCHID": batch, "ICAO_CDE": icao, "OLSON_ID": oid, "RAWOFFSET": raw})
             counts["loaded"] += 1
 
-        # audit vs Jeppesen ICAO (no filter, audit only)
+        # audit vs Jeppesen ICAO (no filter, audit only) - latest timestamped STG
         try:
-            jep_path = APP.airport_stg
+            from utils.common import BASE_DIR
+            cands = sorted((BASE_DIR / "output" / "stage").glob("LOC_AIRPORT_STG_*.csv"))
+            cands = [p for p in cands if "jep_only" not in p.name]
+            jep_path = max(cands, key=lambda p: p.stat().st_mtime) if cands else APP.airport_stg
             if jep_path.is_file():
                 jep_df = pd.read_csv(jep_path, dtype=str, keep_default_na=False, usecols=["ICAO_ARPT_CDE"])
                 jep_icao = set(jep_df["ICAO_ARPT_CDE"].str.strip())
@@ -139,9 +144,11 @@ class OlsonLoader:
         df = pd.DataFrame(rows, columns=cols)
         if not df.empty:
             df = df.astype(str)
-        OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(OUTPUT_CSV, index=False)
-        log.info("Wrote %d rows -> %s", len(df), OUTPUT_CSV)
+        from utils.common import timestamped_path
+        out_csv = timestamped_path(OUTPUT_CSV, batch_id)
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(out_csv, index=False)
+        log.info("Wrote %d rows -> %s", len(df), out_csv)
 
         errors.save(APP.error_report, append=True)
         log.info(errors.summary("olson"))
@@ -150,13 +157,31 @@ class OlsonLoader:
 
         try:
             df.attrs["counts"] = counts
+            df.attrs["output"] = str(out_csv)
+            df.attrs["batch_id"] = batch_id
         except (AttributeError, ValueError, TypeError) as e:
             log.warning("Could not attach olson counts: %s", e)
         return df
 
 
-def run() -> pd.DataFrame:
-    return OlsonLoader().run()
+def run(batch_id: str | None = None) -> pd.DataFrame:
+    return OlsonLoader().run(batch_id=batch_id)
+
+
+def metadata_rows(result, run_ts: str) -> list[dict]:
+    from utils.summary import StageSummary
+    try:
+        attrs = getattr(result, "attrs", {}) or {}
+        counts = dict(attrs.get("counts", {}))
+        out = attrs.get("output", str(OUTPUT_CSV))
+    except (AttributeError, ValueError, TypeError):
+        counts, out = {}, str(OUTPUT_CSV)
+    if result is None and not counts:
+        return []
+    return [{"run_timestamp": run_ts, "status": "COMPLETED", "stage": "olson", "tag": "olson",
+             "summary": StageSummary.olson(counts),
+             "output": str(out),
+             "error_report": str(APP.error_report), "ignore_report": str(APP.ignore_report)}]
 
 
 if __name__ == "__main__":

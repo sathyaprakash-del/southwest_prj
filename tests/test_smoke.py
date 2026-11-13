@@ -1,4 +1,4 @@
-"""Smoke test: outputs, counts, TIMEZONE + SRC_LOC (run: python -m unittest discover -s tests)."""
+"""Smoke test: outputs, counts, TIMEZONE (run: python -m unittest discover -s tests)."""
 import csv
 import pathlib
 import sys
@@ -11,17 +11,28 @@ from utils.common import APP
 OUT = APP.output_dir
 
 
+def _latest(pattern: str) -> pathlib.Path:
+    files = sorted((OUT / "stage").glob(pattern))
+    assert files, f"missing output/stage/{pattern}"
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
 def _read(name):
-    return pd.read_csv(OUT / name, dtype=str, keep_default_na=False)
+    # timestamped outputs: LOC_X_STG_YYYYMMDD_HHMM.csv
+    p = OUT / name
+    if p.is_file():
+        return pd.read_csv(p, dtype=str, keep_default_na=False)
+    stem = pathlib.Path(name).stem  # e.g. LOC_AIRPORT_STG
+    return pd.read_csv(_latest(f"{stem}_*.csv"), dtype=str, keep_default_na=False)
 
 
 class TestOutputs(unittest.TestCase):
     def test_files_exist(self):
-        # olson_pip OFF - PIP file optional (kept but not run)
-        for f in ["stage/LOC_AIRPORT_STG.csv", "stage/LOC_GATE_STG.csv", "stage/LOC_RUNWAY_STG.csv",
-                  "ERROR_REPORT.csv", "IGNORE_REPORT.csv",
-                  "stage/LOC_TMZN_STG.csv",
-                  "stage/LOC_OLSON_ID_STG.csv", "OPS_Process_Data.csv"]:
+        # timestamped: check at least one match per pattern
+        for pat in ["LOC_AIRPORT_STG_*.csv", "LOC_GATE_STG_*.csv", "LOC_RUNWAY_STG_*.csv",
+                    "LOC_TMZN_STG_*.csv", "LOC_OLSON_ID_STG_*.csv"]:
+            self.assertTrue(list((OUT / "stage").glob(pat)), f"missing output/stage/{pat}")
+        for f in ["ERROR_REPORT.csv", "IGNORE_REPORT.csv", "OPS_Process_Data.csv"]:
             self.assertTrue((OUT / f).is_file(), f"missing output/{f}")
 
     def test_no_legacy_artifacts(self):
@@ -51,13 +62,14 @@ class TestCounts(unittest.TestCase):
         self.assertEqual(len(self.bts), 5890)
 
     def test_bts_extra_cols(self):
-        for c in ["FINAL_LAT", "FINAL_LON", "SRC_LOC", "BTS_CONV", "TIMEZONE"]:
+        for c in ["BATCHID", "FINAL_LAT", "FINAL_LON", "BTS_CONV", "TIMEZONE"]:
             self.assertIn(c, self.bts.columns)
+        self.assertNotIn("SRC_LOC", self.bts.columns)
 
-    def test_src_loc_split(self):
-        src = self.bts["SRC_LOC"].value_counts().to_dict()
-        self.assertEqual(src.get("bts", 0), 3678)
-        self.assertEqual(src.get("jepp", 0), 2212)
+    def test_batchid_format(self):
+        import re
+        for v in self.bts["BATCHID"].unique():
+            self.assertRegex(v, r"^\d{12}$", f"BATCHID {v} not YYYYMMDDHHMM")
 
     def test_timezone_populated(self):
         self.assertEqual(int((self.bts["TIMEZONE"] != "").sum()), 5890)

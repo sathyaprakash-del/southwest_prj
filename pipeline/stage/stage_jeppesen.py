@@ -157,14 +157,22 @@ def check_threshold(total_airports: int, failures: int, threshold_percent: float
 
 
 def save_outputs(
-    frames: dict[str, pd.DataFrame], error_df: pd.DataFrame, ignore_df: pd.DataFrame | None = None
-) -> None:
+    frames: dict[str, pd.DataFrame], error_df: pd.DataFrame, ignore_df: pd.DataFrame | None = None,
+    batch_id: str | None = None,
+) -> dict[str, Path]:
+    from utils.common import run_batch_id, timestamped_path
+    batch_id = batch_id or run_batch_id()
     APP.stage_dir.mkdir(parents=True, exist_ok=True)
+    written = {}
     for rtype, df in frames.items():
-        out = APP.stage_dir / APP.config["jeppesen"]["record_types"][rtype]["output_file"]
+        df = df.copy()
+        df.insert(0, "BATCHID", batch_id)
+        base = APP.stage_dir / APP.config["jeppesen"]["record_types"][rtype]["output_file"]
+        out = timestamped_path(base, batch_id)
         out.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out, index=False)
         log.info("Wrote %d rows -> %s", len(df), out)
+        written[rtype] = out
     err_path = APP.error_report
     err_path.parent.mkdir(parents=True, exist_ok=True)
     error_df.to_csv(err_path, index=False)
@@ -174,21 +182,29 @@ def save_outputs(
         ign_path.parent.mkdir(parents=True, exist_ok=True)
         ignore_df.to_csv(ign_path, index=False)
         log.info("Wrote %d ignores -> %s", len(ignore_df), ign_path)
+    return written
 
 
 class JeppesenParser:
     def __init__(self, config: dict | None = None):
         self.config = config or APP.config
 
-    def run(self) -> dict:
+    def run(self, batch_id: str | None = None) -> dict:
+        from utils.common import run_batch_id
+        batch_id = batch_id or run_batch_id()
         setup_logging()
         log.info("Loading config %s", APP.path)
         log.info("Parsing %s", INPUT_DAT)
         frames, error_df, stats, ignore_df = process_jeppesen_file(INPUT_DAT, self.config, SKIP_LINES)
-        save_outputs(frames, error_df, ignore_df)
+        written = save_outputs(frames, error_df, ignore_df, batch_id)
         stats["airport_rows"] = len(frames.get("airport", []))
         stats["gate_rows"] = len(frames.get("gate", []))
         stats["runway_rows"] = len(frames.get("runway", []))
+        stats["batch_id"] = batch_id
+        try:
+            stats["outputs"] = {k: str(v) for k, v in written.items()}
+        except (AttributeError, ValueError, TypeError):
+            pass
         log.info("Jeppesen done: airports=%d success=%d failures=%d invalid=%d (airport=%d gate=%d runway=%d)",
                  stats["total_airport_cnt"], stats["success_cnt"], stats["failure_cnt"], stats["invalid_cnt"],
                  stats["airport_rows"], stats["gate_rows"], stats["runway_rows"])
@@ -196,8 +212,24 @@ class JeppesenParser:
         return stats
 
 
-def run() -> dict[str, int]:
-    return JeppesenParser().run()
+def run(batch_id: str | None = None) -> dict[str, int]:
+    return JeppesenParser().run(batch_id=batch_id)
+
+
+def metadata_rows(result, run_ts: str) -> list[dict]:
+    from utils.summary import StageSummary
+    stats = result if isinstance(result, dict) else {}
+    err, ign = str(APP.error_report), str(APP.ignore_report)
+    outputs = stats.get("outputs", {}) if isinstance(stats, dict) else {}
+    rows = []
+    for tag in ("airport", "gate", "runway"):
+        out = outputs.get(tag, str(APP.stage_files[tag]))
+        rows.append({"run_timestamp": run_ts, "status": "COMPLETED",
+                     "stage": "jeppesen", "tag": tag,
+                     "summary": StageSummary.jeppesen(tag, stats),
+                     "output": str(out),
+                     "error_report": err, "ignore_report": ign})
+    return rows
 
 
 if __name__ == "__main__":

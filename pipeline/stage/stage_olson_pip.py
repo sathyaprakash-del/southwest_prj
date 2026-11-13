@@ -59,15 +59,25 @@ class OlsonPipLoader:
     def __init__(self, config: dict | None = None):
         self.config = config or _CONFIG
 
-    def run(self) -> pd.DataFrame:
+    def run(self, batch_id: str | None = None) -> pd.DataFrame:
+        from utils.common import GeoValidator, run_batch_id, timestamped_path
+        batch_id = batch_id or run_batch_id()
         setup_logging()
         try:
             from timezonefinder import TimezoneFinder
         except ImportError as e:
             raise RuntimeError(f"timezonefinder lib required: {e}")
-        if not INPUT_STG.is_file():
-            raise FileNotFoundError(f"Enriched STG missing (run BTS first): {INPUT_STG}")
-        df_in = pd.read_csv(INPUT_STG, dtype=str, keep_default_na=False)
+        # read latest timestamped enriched STG
+        from utils.common import latest_stage_file, BASE_DIR
+        try:
+            cands = sorted((BASE_DIR / "output" / "stage").glob("LOC_AIRPORT_STG_*.csv"))
+            cands = [p for p in cands if "jep_only" not in p.name]
+            in_path = max(cands, key=lambda p: p.stat().st_mtime) if cands else INPUT_STG
+        except (OSError, ValueError):
+            in_path = INPUT_STG
+        if not in_path.is_file():
+            raise FileNotFoundError(f"Enriched STG missing (run BTS first): {in_path}")
+        df_in = pd.read_csv(in_path, dtype=str, keep_default_na=False)
         for c in ("ICAO_ARPT_CDE", "FINAL_LAT", "FINAL_LON"):
             if c not in df_in.columns:
                 raise ValueError(f"Enriched STG missing column: {c} (run BTS overwrite first)")
@@ -76,17 +86,14 @@ class OlsonPipLoader:
         errors = ErrorCapture(self.config, stage="olson_pip")
         # reuse olson templates for errors (same shape)
         ignores = _make_ignore_capture()
-        batch = datetime.now().strftime("%Y%j%H%M%S")
+        batch = batch_id
         rows = []
         counts = {"rows_read": len(df_in), "loaded": 0, "failed": 0, "no_zone": 0, "bad_coords": 0}
         for _, r in df_in.iterrows():
             icao = (r.get("ICAO_ARPT_CDE", "") or "").strip()
             la_s, lo_s = (r.get("FINAL_LAT", "") or "").strip(), (r.get("FINAL_LON", "") or "").strip()
-            try:
-                la, lo = float(la_s), float(lo_s)
-            except ValueError:
-                la = lo = None
-            if la is None or not (-90 <= la <= 90) or not (-180 <= lo <= 180):
+            la, lo, _ = GeoValidator.validate(la_s, lo_s)
+            if la is None or lo is None:
                 counts["failed"] += 1
                 counts["bad_coords"] += 1
                 errors.add("olson_icao", icao, f"{la_s}|{lo_s}", tag="olson_pip")
@@ -114,22 +121,42 @@ class OlsonPipLoader:
         df = pd.DataFrame(rows, columns=["BATCHID", "ICAO_CDE", "OLSON_ID", "RAWOFFSET"])
         if not df.empty:
             df = df.astype(str)
-        OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(OUTPUT_CSV, index=False)
-        log.info("Wrote %d rows -> %s", len(df), OUTPUT_CSV)
+        from utils.common import timestamped_path
+        out_csv = timestamped_path(OUTPUT_CSV, batch_id)
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(out_csv, index=False)
+        log.info("Wrote %d rows -> %s", len(df), out_csv)
         errors.save(APP.error_report, append=True)
         log.info(errors.summary("olson_pip"))
         ignores.save(APP.ignore_report, append=True)
         log.info("IGNORES stage=olson_pip count=%d", len(ignores))
         try:
             df.attrs["counts"] = counts
+            df.attrs["output"] = str(out_csv)
+            df.attrs["batch_id"] = batch_id
         except (AttributeError, ValueError, TypeError):
             pass
         return df
 
 
-def run() -> pd.DataFrame:
-    return OlsonPipLoader().run()
+def run(batch_id: str | None = None) -> pd.DataFrame:
+    return OlsonPipLoader().run(batch_id=batch_id)
+
+
+def metadata_rows(result, run_ts: str) -> list[dict]:
+    from utils.summary import StageSummary
+    try:
+        attrs = getattr(result, "attrs", {}) or {}
+        counts = dict(attrs.get("counts", {}))
+        out = attrs.get("output", str(OUTPUT_CSV))
+    except (AttributeError, ValueError, TypeError):
+        counts, out = {}, str(OUTPUT_CSV)
+    if result is None and not counts:
+        return []
+    return [{"run_timestamp": run_ts, "status": "COMPLETED", "stage": "olson_pip", "tag": "olson_pip",
+             "summary": StageSummary.olson_pip(counts),
+             "output": str(out),
+             "error_report": str(APP.error_report), "ignore_report": str(APP.ignore_report)}]
 
 
 if __name__ == "__main__":

@@ -148,7 +148,9 @@ class InnovataParser:
         self.config = config or _CONFIG
         self.innovata = self.config.get("innovata", _INNOVATA)
 
-    def run(self) -> pd.DataFrame:
+    def run(self, batch_id: str | None = None) -> pd.DataFrame:
+        from utils.common import run_batch_id, timestamped_path
+        batch_id = batch_id or run_batch_id()
         setup_logging()
         ic = self.innovata
         cols_cfg = ic.get("columns", [])
@@ -177,7 +179,7 @@ class InnovataParser:
         )
         bad_char = re.compile(ic.get("special_char_pattern", r"[^\x20-\x7E]"))
         text_fields = ic.get("station_text_check_fields", ["STANAME", "CITYNAME"])
-        batch_id = datetime.now().strftime("%Y%j%H%M%S")
+        # batch_id passed from SWA_MDM (YYYYMMDD_HHMM, no sec)
 
         log.info("Loading Innovata TZ %s", tz_path)
         tz_index = load_tz_index(tz_path, tz_enc, tz_delim, tz_fields)
@@ -228,7 +230,7 @@ class InnovataParser:
                     continue
                 if not periods:
                     counts["failed_no_timezone"] += 1
-                    errors.add("innovata_no_tz", code, raw, tag="innovata")
+                    errors.add("innovata_no_timezone", code, raw, tag="innovata")
                     ignores.add("innovata_no_tz", code, raw, tag="innovata")
                     continue
                 if mode == "current":
@@ -246,10 +248,11 @@ class InnovataParser:
         df = pd.DataFrame(rows, columns=headers)
         if not df.empty:
             df = df.astype(str)
-        OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(OUTPUT_CSV, index=False)
+        out_csv = timestamped_path(OUTPUT_CSV, batch_id)
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(out_csv, index=False)
         log.info("Wrote %d rows (%d stations loaded / %d read) -> %s",
-                 len(df), counts["stations_loaded"], counts["stations_read"], OUTPUT_CSV)
+                 len(df), counts["stations_loaded"], counts["stations_read"], out_csv)
 
         # Central error report only — no separate innovata_errors.csv
         errors.save(APP.error_report, append=True)
@@ -261,13 +264,30 @@ class InnovataParser:
             df.attrs["counts"] = counts
             df.attrs["stations"] = stations
             df.attrs["batch_id"] = batch_id
+            df.attrs["output"] = str(out_csv)
         except (AttributeError, ValueError, TypeError) as e:
             log.warning("Could not attach innovata attrs: %s", e)
         return df
 
 
-def run() -> pd.DataFrame:
-    return InnovataParser().run()
+def run(batch_id: str | None = None) -> pd.DataFrame:
+    return InnovataParser().run(batch_id=batch_id)
+
+
+def metadata_rows(result, run_ts: str) -> list[dict]:
+    from utils.summary import StageSummary
+    try:
+        attrs = getattr(result, "attrs", {}) or {}
+        counts = dict(attrs.get("counts", {}))
+        out = attrs.get("output", str(OUTPUT_CSV))
+    except (AttributeError, ValueError, TypeError):
+        counts, out = {}, str(OUTPUT_CSV)
+    if result is None and not counts:
+        return []
+    return [{"run_timestamp": run_ts, "status": "COMPLETED", "stage": "innovata", "tag": "innovata",
+             "summary": StageSummary.innovata(counts),
+             "output": str(out),
+             "error_report": str(APP.error_report), "ignore_report": str(APP.ignore_report)}]
 
 
 if __name__ == "__main__":

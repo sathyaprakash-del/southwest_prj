@@ -38,6 +38,24 @@ def setup_logging(name: str, log_file: Path) -> Path:
     return log_file
 
 
+def run_batch_id() -> str:
+    """Single batch id per run: YYYYMMDDHHMM (no underscore, no sec)."""
+    return datetime.now().strftime("%Y%m%d%H%M")
+
+
+def timestamped_path(base: Path, batch_id: str) -> Path:
+    """LOC_X_STG.csv -> LOC_X_STG_<YYYYMMDD_HHMM>.csv"""
+    base = Path(base)
+    return base.parent / f"{base.stem}_{batch_id}{base.suffix}"
+
+
+def latest_stage_file(pattern: str) -> Path | None:
+    """Latest timestamped stage file matching glob pattern (e.g. LOC_AIRPORT_STG_*.csv)."""
+    from pathlib import Path as _P
+    files = sorted(_P(__file__).resolve().parent.parent.glob(pattern))
+    return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+
 class GeoValidator:
     """General lat/lon validation via geopy. No hardcoded ranges, no stage names."""
     @staticmethod
@@ -250,25 +268,8 @@ class Constants:
     COL_BTS_LON = "bts_LONGITUDE"
     COL_FINAL_LAT = "FINAL_LAT"
     COL_FINAL_LON = "FINAL_LON"
-    COL_SRC_LOC = "SRC_LOC"
     COL_BTS_CONV = "BTS_CONV"
     COL_TIMEZONE = "TIMEZONE"
-    SRC_BTS = "bts"
-    SRC_JEPP = "jepp"
-    SRC_FAIL = "fail"
-    STAGE_JEPPESEN = "jeppesen"
-    STAGE_BTS = "bts"
-    STAGE_INNOVATA = "innovata"
-    STAGE_OLSON = "olson"
-    STAGE_OLSON_PIP = "olson_pip"
-    STAGE_PIPELINE = "PIPELINE"
-    TAG_AIRPORT = "airport"
-    TAG_GATE = "gate"
-    TAG_RUNWAY = "runway"
-    TAG_NON_LATLON = "non-latlon"
-    TAG_INNOVATA = "innovata"
-    TAG_OLSON = "olson"
-    TAG_OLSON_PIP = "olson_pip"
     STATUS_COMPLETED = "COMPLETED"
     STATUS_SKIPPED = "SKIPPED"
     STATUS_FAILED = "FAILED"

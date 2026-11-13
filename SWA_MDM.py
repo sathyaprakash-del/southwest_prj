@@ -1,12 +1,11 @@
-"""SWA MDM pipeline (class-based, utils shared). Skips run when input DAT is unchanged."""
+"""SWA MDM pipeline (config-only jobs, no hardcode, no folder scan)."""
+import importlib
 import logging
 from pathlib import Path
 
-from pipeline.stage import stage_bts
-from utils.common import APP, Constants, FileHelper, setup_logging as _setup_logging
+from utils.common import APP, FileHelper, setup_logging as _setup_logging
 from utils.exceptions import ThresholdExceededError
 from utils.metadata import write_metadata
-from utils.summary import StageSummary
 
 log = logging.getLogger("SWA_MDM")
 
@@ -14,9 +13,6 @@ INPUT_DAT = APP.input_dat
 HISTORY_DIR = APP.history_dir
 HISTORY_PREFIX = APP.history_prefix
 LOG_FILE = APP.mdm_log
-
-# OFF switch - keep file but do not run (do not delete pipeline/stage/stage_olson_pip.py)
-ENABLE_OLSON_PIP = False
 
 
 def setup_logging() -> Path:
@@ -45,25 +41,42 @@ def is_same_as_last() -> tuple:
     return input_hash == history_hash, latest, input_hash, history_hash
 
 
+def get_jobs() -> list[dict]:
+    """Only config pipeline.jobs drives the run. No folder scan, no disabled list."""
+    cfg = APP.config.get("pipeline", {})
+    return list(cfg.get("jobs", []))
+
+
+def _run_job_module(module: str, batch_id: str | None = None):
+    mod = importlib.import_module(f"pipeline.stage.{module}")
+    if hasattr(mod, "run") and callable(mod.run):
+        try:
+            return mod.run(batch_id=batch_id) if batch_id else mod.run()
+        except TypeError:
+            return mod.run()
+    for attr in dir(mod):
+        if attr.startswith("_"):
+            continue
+        obj = getattr(mod, attr)
+        try:
+            try:
+                inst = obj(batch_id=batch_id) if batch_id else obj()
+            except TypeError:
+                inst = obj()
+        except TypeError:
+            continue
+        if hasattr(inst, "run") and callable(inst.run):
+            try:
+                return inst.run(batch_id=batch_id)
+            except TypeError:
+                return inst.run()
+    raise RuntimeError(f"No runnable run() in {module}")
+
+
 class MDMPipeline:
-    """Class wrapper for full pipeline (uses utils + stage classes)."""
-    def __init__(self):
-        from pipeline.stage.stage_bts import BTSEnricher
-        from pipeline.stage.stage_innovata import InnovataParser
-        from pipeline.stage.stage_jeppesen import JeppesenParser
-        from pipeline.stage.stage_olson import OlsonLoader
-        # OFF - imported but not run unless ENABLE_OLSON_PIP
-        from pipeline.stage.stage_olson_pip import OlsonPipLoader
-        self.jep = JeppesenParser()
-        self.enricher = BTSEnricher()
-        self.innovata = InnovataParser()
-        self.olson = OlsonLoader()
-        self.olson_pip = OlsonPipLoader()
+    """No stage classes loaded here. Jobs come only from config."""
 
     def run(self) -> dict:
-        from pipeline.stage.stage_bts import OUTPUT_CSV as BTS_OUT
-        from pipeline.stage.stage_innovata import OUTPUT_CSV as INNOVATA_OUT
-        from pipeline.stage.stage_olson import OUTPUT_CSV as OLSON_OUT
         if not INPUT_DAT.is_file():
             raise FileNotFoundError(f"Input DAT not found: {INPUT_DAT}")
         is_same, latest, input_hash, history_hash = is_same_as_last()
@@ -79,99 +92,59 @@ class MDMPipeline:
                 log.warning(msg)
                 print(msg)
                 result = {"skipped": True, "reason": "unchanged", "history": str(latest)}
-                write_metadata(result, {}, None)
+                write_metadata(result, {})
                 log.info("=== SWA_MDM pipeline SKIPPED (unchanged input) ===")
                 return result
             log.info("Input DAT changed vs %s. Running pipeline.", latest.name)
-        log.info("=== STEP 1/4: stage_jeppesen ===")
-        try:
-            stats = self.jep.run()
-        except ThresholdExceededError as e:
-            log.error("Pipeline halted: %s", e)
-            result = {"skipped": False, "failed": True, "reason": str(e),
-                      "stats": {}, "rows": 0, "history": "", "counts": {}}
-            write_metadata(result, {}, None)
-            log.info("=== SWA_MDM pipeline FAILED ===")
-            return result
-        log.info("Step 1 done: airports=%d success=%d failures=%d invalid=%d",
-                 stats["total_airport_cnt"], stats["success_cnt"],
-                 stats["failure_cnt"], stats["invalid_cnt"])
-        for _tag in (Constants.TAG_AIRPORT, Constants.TAG_GATE, Constants.TAG_RUNWAY):
-            log.info("TAG stage=%s tag=%s summary=%s", Constants.STAGE_JEPPESEN, _tag,
-                     StageSummary.jeppesen(_tag, stats))
-        log.info("=== STEP 2/4: stage_bts ===")
-        merged = self.enricher.run()
-        log.info("Step 2 done: joined rows=%d -> %s", len(merged), BTS_OUT)
-        try:
-            if Constants.COL_SRC_LOC in merged.columns:
-                _loc = merged[Constants.COL_SRC_LOC].value_counts().to_dict()
-            else:
-                _loc = {}
-            _counts = dict(getattr(merged, "attrs", {}).get("counts", {}))
-            log.info("TAG stage=%s tag=%s summary=%s", Constants.STAGE_BTS, Constants.TAG_AIRPORT,
-                     StageSummary.bts_airport(len(merged), int(_loc.get(Constants.SRC_BTS, 0))))
-            log.info("TAG stage=%s tag=%s summary=%s", Constants.STAGE_BTS, Constants.TAG_NON_LATLON,
-                     StageSummary.bts_nonlatlon(_counts, int(_loc.get(Constants.SRC_JEPP, 0)),
-                                                int(_loc.get(Constants.SRC_FAIL, 0))))
-        except (KeyError, AttributeError, ValueError, TypeError) as e:
-            log.warning("TAG bts summary log failed: %s", e)
-        log.info("=== STEP 3/4: stage_innovata ===")
-        innovata_df = None
-        innovata_counts: dict = {}
-        try:
-            innovata_df = self.innovata.run()
-            innovata_counts = dict(getattr(innovata_df, "attrs", {}).get("counts", {}))
-            log.info("Step 3 done: stations=%d loaded=%d rows=%d -> %s",
-                     innovata_counts.get("stations_read", 0),
-                     innovata_counts.get("stations_loaded", 0),
-                     len(innovata_df), INNOVATA_OUT)
-            log.info("TAG stage=%s tag=%s summary=%s", Constants.STAGE_INNOVATA, Constants.TAG_INNOVATA,
-                     StageSummary.innovata(innovata_counts))
-        except FileNotFoundError as e:
-            log.warning("Innovata skipped (optional inputs missing): %s", e)
-        log.info("=== STEP 4/4: stage_olson ===")
-        olson_df = None
-        olson_counts: dict = {}
-        try:
-            olson_df = self.olson.run()
-            olson_counts = dict(getattr(olson_df, "attrs", {}).get("counts", {}))
-            log.info("Step 4 done: rows=%d loaded=%d -> %s",
-                     olson_counts.get("rows_read", 0), len(olson_df), OLSON_OUT)
-            log.info("TAG stage=%s tag=%s summary=%s", Constants.STAGE_OLSON, Constants.TAG_OLSON,
-                     StageSummary.olson(olson_counts))
-        except FileNotFoundError as e:
-            log.warning("Olson skipped (missing input): %s", e)
-        # OFF - stage_olson_pip kept but not run
-        olson_pip_df = None
-        olson_pip_counts: dict = {}
-        if ENABLE_OLSON_PIP:
-            from pipeline.stage.stage_olson_pip import OUTPUT_CSV as OLSON_PIP_OUT
+
+        jobs = get_jobs()
+        total = len(jobs)
+        log.info("Jobs from config (%d): %s", total, [j.get("module") for j in jobs])
+        from utils.common import run_batch_id
+        batch_id = run_batch_id()
+        log.info("Run batch_id (YYYYMMDD_HHMM, no sec): %s", batch_id)
+
+        results: dict = {}
+
+        for i, job in enumerate(jobs, 1):
+            module = job.get("module", "")
+            name = job.get("name", module)
+            gates_next = bool(job.get("gates_next", False))
+            log.info("=== STEP %d/%d: %s (%s) ===", i, total, name, module)
             try:
-                olson_pip_df = self.olson_pip.run()
-                olson_pip_counts = dict(getattr(olson_pip_df, "attrs", {}).get("counts", {}))
-                log.info("Step 5 done: rows=%d loaded=%d -> %s",
-                         olson_pip_counts.get("rows_read", 0), len(olson_pip_df), OLSON_PIP_OUT)
-                log.info("TAG stage=%s tag=%s summary=%s", Constants.STAGE_OLSON_PIP, Constants.TAG_OLSON_PIP,
-                         StageSummary.olson_pip(olson_pip_counts))
-            except (FileNotFoundError, ValueError) as e:
-                log.warning("Olson PIP skipped: %s", e)
-        else:
-            log.info("Stage olson_pip OFF (file kept, not run)")
+                out = _run_job_module(module, batch_id)
+            except ThresholdExceededError as e:
+                log.error("Pipeline halted: %s", e)
+                result = {"skipped": False, "failed": True, "reason": str(e),
+                          "stats": {}, "rows": 0, "history": ""}
+                write_metadata(result, {})
+                log.info("=== SWA_MDM pipeline FAILED ===")
+                return result
+            except FileNotFoundError as e:
+                if gates_next:
+                    log.error("Required job %s missing input, halting: %s", module, e)
+                    result = {"skipped": False, "failed": True, "reason": str(e),
+                              "stats": {}, "rows": 0, "history": ""}
+                    write_metadata(result, {})
+                    return result
+                log.warning("%s skipped (missing input): %s", module, e)
+                continue
+
+            results[module] = out
+            try:
+                _mod = importlib.import_module(f"pipeline.stage.{module}")
+                _out_csv = getattr(_mod, "OUTPUT_CSV", "")
+            except ImportError:
+                _out_csv = ""
+            if isinstance(out, dict):
+                log.info("Step done: %s -> %s stats=%s", module, _out_csv, out.get("total_airport_cnt", out))
+            else:
+                log.info("Step done: %s -> %s rows=%s", module, _out_csv,
+                         len(out) if hasattr(out, "__len__") else type(out))
+
         archived = archive_dat()
-        counts: dict = {}
-        try:
-            counts = dict(getattr(merged, "attrs", {}).get("counts", {}))
-        except (AttributeError, ValueError, TypeError) as e:
-            log.warning("Pipeline counts unavailable, defaulting to empty: %s", e)
-            counts = {}
-        result = {"skipped": False, "stats": stats, "rows": len(merged), "history": str(archived), "counts": counts,
-                  "innovata_counts": innovata_counts,
-                  "innovata_rows": len(innovata_df) if innovata_df is not None else 0,
-                  "olson_counts": olson_counts,
-                  "olson_rows": len(olson_df) if olson_df is not None else 0,
-                  "olson_pip_counts": olson_pip_counts,
-                  "olson_pip_rows": len(olson_pip_df) if olson_pip_df is not None else 0}
-        write_metadata(result, stats, merged, innovata_df, olson_df, olson_pip_df)
+        result = {"skipped": False, "history": str(archived)}
+        write_metadata(result, results)
         log.info("=== SWA_MDM pipeline complete ===")
         return result
 
@@ -183,10 +156,6 @@ def run_pipeline() -> dict:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     setup_logging()
-    try:
-        stage_bts.setup_logging()
-    except AttributeError:
-        pass
     result = run_pipeline()
     if result.get("skipped"):
         print(f"Result: SKIPPED - both DAT files are same. See history: {result['history']}")

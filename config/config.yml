@@ -1,7 +1,14 @@
-_comment: Southwest MDM staging config. Stages run Jeppesen -> BTS. Offsets are 0-based,
-  end exclusive. Innovata section is pending real files.
+_comment: Southwest MDM staging config. Stages run Jeppesen -> BTS -> Innovata (independent)
+  -> Olson (csv).
 run:
   skip_lines: 4
+  data_directory: ''
+  output_directory: ''
+  batch_id: null
+  batch_id_format: ''
+  run_indicator: ''
+  domain: ''
+  status_file: ''
 directories:
   output: output
   stage: output/stage
@@ -11,6 +18,9 @@ directories:
 logs:
   jeppesen: logs/stage_jeppesen.log
   bts: logs/stage_bts.log
+  innovata: logs/stage_innovata.log
+  olson: logs/stage_olson.log
+  olson_pip: logs/stage_olson_pip.log
   mdm: logs/SWA_MDM.log
 sources:
   jeppesen:
@@ -27,26 +37,76 @@ sources:
     encoding: latin-1
     delimiter: \t
     required: false
-    note: Pending real file + KT v16 s2.4 layout confirmation
+    note: Innovata independent load, no Jeppesen join
   innovata_tz:
     file_path: input/SWA_INV_TZ.dat
     encoding: latin-1
     delimiter: \t
     required: false
-    note: Pending real file + KT v16 s2.4 layout confirmation
+    note: Innovata independent load, no Jeppesen join
+  olson:
+    file_path: input/loc_olson_id_stg_export.csv
+    encoding: utf-8-sig
+    delimiter: ','
+    required: true
+    note: Google Olson export, direct source for stage_olson csv mode
+  db_schema:
+    file_path: ''
+    encoding: ''
+    required: false
+    note: ''
+schema_check:
+  enabled: false
+  fail_on_mismatch: false
+pipeline:
+  jobs:
+  - task_type: stage
+    name: jeppesen_processing
+    module: stage_jeppesen
+    gates_next: true
+  - task_type: stage
+    name: bts_processing
+    module: stage_bts
+    gates_next: true
+  - task_type: stage
+    name: innovata_processing
+    module: stage_innovata
+    gates_next: false
+  - task_type: stage
+    name: olson_timezone_processing
+    module: stage_olson
+    gates_next: false
 joins:
   airport_code:
     jeppesen_column: IATA_ARPT_CDE
     bts_field: AIRPORT
-    note: 3-letter IATA code shared by Jeppesen and BTS.
+    innovata_station_field: STACODE
+    note: 3-letter IATA code shared by Jeppesen and BTS. Innovata independent, no
+      join filter.
+  station_to_timezone:
+    station_fields:
+    - CNTRYCODE
+    - TZCODE
+    timezone_fields:
+    - CNTRYCODE
+    - TZCODE
+    note: 'Innovata independent, 1 station : N periods'
+  olson:
+    jeppesen_column: ICAO_ARPT_CDE
+    olson_field: ICAO_CDE
+    note: 4-letter ICAO for audit only (in_jeppesen / not_in_jeppesen), no filter.
 jeppesen:
   trim_values: true
   sql_escape_apostrophes: false
   failure_threshold_percent: 1
+  errors_file: ''
   record_types:
     airport:
       description: Airport line A/1 -> LOC_AIRPORT_STG
       output_file: LOC_AIRPORT_STG.csv
+      table: ''
+      declared_line_length: null
+      trailing_blank_columns: []
       counted: true
       discriminators:
       - name: PrimaryRecInd
@@ -217,6 +277,8 @@ jeppesen:
     gate:
       description: Gate line B/0 -> LOC_GATE_STG
       output_file: LOC_GATE_STG.csv
+      table: ''
+      declared_line_length: null
       counted: false
       discriminators:
       - name: PrimaryRecInd
@@ -271,6 +333,8 @@ jeppesen:
     runway:
       description: Runway line G/1 -> LOC_RUNWAY_STG
       output_file: LOC_RUNWAY_STG.csv
+      table: ''
+      declared_line_length: null
       counted: false
       discriminators:
       - name: PrimaryRecInd
@@ -407,6 +471,14 @@ jeppesen:
         source: field
         field: RNWY_DESC
 bts:
+  table: ''
+  report_rejects: false
+  rejects_file: ''
+  reject_report_columns: []
+  errors_file: ''
+  staging_columns: []
+  location_check_km: null
+  skip_on_location_mismatch: false
   columns:
   - AIRPORT
   - LAT_DEGREES
@@ -425,14 +497,13 @@ bts:
     equals: '1'
   - field: AIRPORT_THRU_DATE
     is_empty: true
-  output_file: LOC_AIRPORT_BTS_STG.csv
+  output_file: LOC_AIRPORT_STG.csv
 errors:
   headers:
   - BUSINESSNAME
   - BUSINESSKEY
   - DATA
   - EXCEPTION_TYPE
-  - BATCH_TYPE
   - ERROR_CDE
   report_file: ERROR_REPORT.csv
   templates:
@@ -440,28 +511,104 @@ errors:
       business_name: ICAO CODE
       key_field: AirportICAOIdentifier
       exception_type: DATAERROR
-      batch_type: MANUAL
       error_cde: ICAO-ERR-1001
     jep_lat_invalid:
       business_name: JEP LATITUDE
       exception_type: DATAERROR
-      batch_type: MANUAL
       error_cde: JEPLAT-ERR-1001
     jep_lon_invalid:
       business_name: JEP LONGITUDE
       exception_type: DATAERROR
-      batch_type: MANUAL
       error_cde: JEPLON-ERR-1001
     bts_lat_invalid:
       business_name: BTS LATITUDE
       exception_type: DATAERROR
-      batch_type: MANUAL
       error_cde: BTSLAT-ERR-1001
     bts_lon_invalid:
       business_name: BTS LONGITUDE
       exception_type: DATAERROR
-      batch_type: MANUAL
       error_cde: BTSLON-ERR-1001
+    innovata_special_chars:
+      business_name: INNOVATA STATION
+      exception_type: DATAERROR
+      error_cde: INVSTA-ERR-1001
+    innovata_no_timezone:
+      business_name: INNOVATA TIMEZONE
+      exception_type: DATAERROR
+      error_cde: INVTZ-ERR-1002
+    innovata_no_current:
+      business_name: INNOVATA PERIOD
+      exception_type: DATAERROR
+      error_cde: INVPER-ERR-1003
+    olson_icao:
+      business_name: OLSON ICAO
+      exception_type: DATAERROR
+      error_cde: OLSICAO-ERR-1001
+    olson_id:
+      business_name: OLSON ID
+      exception_type: DATAERROR
+      error_cde: OLSID-ERR-1002
+    olson_raw:
+      business_name: OLSON RAW OFFSET
+      exception_type: DATAERROR
+      error_cde: OLSRAW-ERR-1003
+    olson_dup:
+      business_name: OLSON DUPLICATE
+      exception_type: DATAERROR
+      error_cde: OLSDUP-ERR-1004
+ignores:
+  headers:
+  - BUSINESSNAME
+  - BUSINESSKEY
+  - DATA
+  - EXCEPTION_TYPE
+  - ERROR_CDE
+  report_file: IGNORE_REPORT.csv
+  templates:
+    jep_skip:
+      business_name: JEPPESEN SKIP
+      exception_type: IGNORE
+      error_cde: JEP-IGN-0001
+    jep_short:
+      business_name: JEPPESEN SHORT LINE
+      exception_type: IGNORE
+      error_cde: JEP-IGN-0002
+    jep_unknown:
+      business_name: JEPPESEN UNKNOWN TYPE
+      exception_type: IGNORE
+      error_cde: JEP-IGN-0003
+    bts_not_latest:
+      business_name: BTS NOT LATEST
+      exception_type: IGNORE
+      error_cde: BTS-IGN-0001
+    bts_thru_date:
+      business_name: BTS THRU DATED
+      exception_type: IGNORE
+      error_cde: BTS-IGN-0002
+    bts_dup:
+      business_name: BTS DUPLICATE
+      exception_type: IGNORE
+      error_cde: BTS-IGN-0003
+    bts_no_jep:
+      business_name: BTS NO JEPPESEN
+      exception_type: IGNORE
+      error_cde: BTS-IGN-0004
+    innovata_no_tz:
+      business_name: INNOVATA NO TIMEZONE
+      exception_type: IGNORE
+      error_cde: INV-IGN-0001
+    olson_dup:
+      business_name: OLSON DUPLICATE
+      exception_type: IGNORE
+      error_cde: OLS-IGN-0001
+    olson_batch_diff:
+      business_name: OLSON BATCH DIFFERS
+      exception_type: IGNORE
+      error_cde: OLS-IGN-0002
+    olson_no_jep:
+      business_name: OLSON NOT IN JEPPESEN
+      exception_type: IGNORE
+      error_cde: OLS-IGN-0003
 outputs:
   metadata:
     file: output/OPS_Process_Data.csv
@@ -473,6 +620,7 @@ outputs:
     - summary
     - output
     - error_report
+    - ignore_report
 innovata:
   _comment: Mapping follows KT document v16 section 2.4 (station tokens 1,4,5,6,9
     and all 11 time zone tokens). GMTVAR is copied as is into TM_ZN_UTC_OFST_MIN_NUM,
@@ -532,4 +680,42 @@ innovata:
   - name: ST_PRVC_NME
     source: station
     field: STATEPROVCODE
-  status: pending-input-files
+  status: active
+olson:
+  _comment: Direct csv source from input/loc_olson_id_stg_export.csv (Google export).
+    Independent load, audit vs Jeppesen ICAO only.
+  source: csv
+  table: LOC_OLSON_ID_STG
+  output_file: LOC_OLSON_ID_STG.csv
+  errors_file: ''
+  iana: {}
+  batch_id_mode: run
+  icao_min_length: 3
+  icao_max_length: 4
+  olson_id_pattern: ^[A-Za-z_]+(/[A-Za-z0-9_+\-]+)*$
+  rawoffset_pattern: ^-?\d+$
+  duplicate_policy: first_wins
+  columns:
+  - BATCHID
+  - ICAO_CDE
+  - OLSON_ID
+  - RAWOFFSET
+olson_pip:
+  _comment: Pip-only Olson from enriched LOC_AIRPORT_STG.csv FINAL_LAT/LON via timezonefinder.
+    No input csv read.
+  table: LOC_OLSON_ID_STG
+  output_file: LOC_OLSON_ID_PIP_STG.csv
+  offset_year: 2026
+  columns:
+  - BATCHID
+  - ICAO_CDE
+  - OLSON_ID
+  - RAWOFFSET
+batch_stat:
+  table: ''
+  output_file: ''
+  columns: []
+  comments: {}
+xref:
+  file: ''
+  coordinate_check_km: null
