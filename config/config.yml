@@ -1,0 +1,535 @@
+_comment: Southwest MDM staging config. Stages run Jeppesen -> BTS. Offsets are 0-based,
+  end exclusive. Innovata section is pending real files.
+run:
+  skip_lines: 4
+directories:
+  output: output
+  stage: output/stage
+  history: output/history
+  history_prefix: SWA_JEPPESEN_
+  logs: logs
+logs:
+  jeppesen: logs/stage_jeppesen.log
+  bts: logs/stage_bts.log
+  mdm: logs/SWA_MDM.log
+sources:
+  jeppesen:
+    file_path: input/SWA_JEPPESEN (1).dat
+    encoding: utf-8
+    required: true
+  bts:
+    file_path: input/SWA_BTS.csv
+    encoding: utf-8
+    delimiter: ','
+    required: true
+  innovata_stn:
+    file_path: input/SWA_INV_STN.dat
+    encoding: latin-1
+    delimiter: \t
+    required: false
+    note: Pending real file + KT v16 s2.4 layout confirmation
+  innovata_tz:
+    file_path: input/SWA_INV_TZ.dat
+    encoding: latin-1
+    delimiter: \t
+    required: false
+    note: Pending real file + KT v16 s2.4 layout confirmation
+joins:
+  airport_code:
+    jeppesen_column: IATA_ARPT_CDE
+    bts_field: AIRPORT
+    note: 3-letter IATA code shared by Jeppesen and BTS.
+jeppesen:
+  trim_values: true
+  sql_escape_apostrophes: false
+  failure_threshold_percent: 1
+  record_types:
+    airport:
+      description: Airport line A/1 -> LOC_AIRPORT_STG
+      output_file: LOC_AIRPORT_STG.csv
+      counted: true
+      discriminators:
+      - name: PrimaryRecInd
+        start: 12
+        end: 13
+        equals: A
+      - name: ContnRecNum
+        start: 21
+        end: 22
+        equals: '1'
+      fields:
+        AirportICAOIdentifier:
+          start: 6
+          end: 10
+        ATAIATADesignator:
+          start: 13
+          end: 16
+        SpeedLimitAltitude:
+          start: 22
+          end: 27
+        LongestRunway:
+          start: 27
+          end: 30
+        IFR_Ind:
+          start: 30
+          end: 31
+        LongestRunWaySurfaceCode:
+          start: 31
+          end: 32
+        AirportRefPtLatitude:
+          start: 32
+          end: 41
+        AirportRefPtLongitude:
+          start: 41
+          end: 51
+        MagneticVariation:
+          start: 51
+          end: 56
+        AirportElevation:
+          start: 56
+          end: 61
+        SpeedLimit:
+          start: 61
+          end: 64
+        RecommendedNavaid:
+          start: 64
+          end: 68
+        TransitionAltitude:
+          start: 70
+          end: 75
+        TransitionLevel:
+          start: 75
+          end: 80
+        StationCategoryCode:
+          start: 80
+          end: 81
+        TimeZone:
+          start: 81
+          end: 84
+        DaylightIndicator:
+          start: 84
+          end: 85
+        MagneticTrueIndicator:
+          start: 85
+          end: 86
+        DatumCode:
+          start: 86
+          end: 89
+        AirportName:
+          start: 93
+          end: 123
+          escape_apostrophes: true
+      validations:
+      - field: AirportICAOIdentifier
+        min_length: 3
+        max_length: 4
+      columns:
+      - name: PRODUCTID
+        source: concat
+        fields:
+        - AirportICAOIdentifier
+      - name: ICAO_ARPT_CDE
+        source: field
+        field: AirportICAOIdentifier
+      - name: IATA_ARPT_CDE
+        source: field
+        field: ATAIATADesignator
+      - name: ATA_IATA_DSGN_CDE
+        source: field
+        field: ATAIATADesignator
+      - name: SPD_LMT_ALT
+        source: field
+        field: SpeedLimitAltitude
+      - name: LONGEST_RNWY
+        source: field
+        field: LongestRunway
+      - name: INST_FLT_RULE_IND
+        source: field
+        field: IFR_Ind
+      - name: LONGEST_RNWY_SRFC_CDE
+        source: field
+        field: LongestRunWaySurfaceCode
+      - name: JEP_ARPT_LAT
+        source: field
+        field: AirportRefPtLatitude
+      - name: JEP_ARPT_LONG
+        source: field
+        field: AirportRefPtLongitude
+      - name: MAGNETIC_VARIATION
+        source: field
+        field: MagneticVariation
+      - name: ELEVATION
+        source: field
+        field: AirportElevation
+      - name: SPD_LMT
+        source: field
+        field: SpeedLimit
+      - name: RECMD_NAV_AID
+        source: field
+        field: RecommendedNavaid
+      - name: TRANSITION_ALT
+        source: field
+        field: TransitionAltitude
+      - name: TRANSITION_LVL
+        source: field
+        field: TransitionLevel
+      - name: STN_CTGY_CDE
+        source: field
+        field: StationCategoryCode
+      - name: JEP_TZ_IND
+        source: field
+        field: TimeZone
+      - name: DLS_TM_IND
+        source: field
+        field: DaylightIndicator
+      - name: MAGNETIC_TRUE_NORTH_IND
+        source: field
+        field: MagneticTrueIndicator
+      - name: DATUM_CDE
+        source: field
+        field: DatumCode
+      - name: ARPT_NME
+        source: field
+        field: AirportName
+      - name: IATA_REGN_CDE
+        source: literal
+        value: ''
+      - name: JEP_DEC_LAT
+        source: derived
+        kind: decimal
+        source_field: JEP_ARPT_LAT
+        is_lat: true
+      - name: JEP_DEC_LON
+        source: derived
+        kind: decimal
+        source_field: JEP_ARPT_LONG
+        is_lat: false
+      - name: JEP_COR_LAT
+        source: derived
+        kind: dms
+        source_field: JEP_ARPT_LAT
+        is_lat: true
+      - name: JEP_COR_LON
+        source: derived
+        kind: dms
+        source_field: JEP_ARPT_LONG
+        is_lat: false
+    gate:
+      description: Gate line B/0 -> LOC_GATE_STG
+      output_file: LOC_GATE_STG.csv
+      counted: false
+      discriminators:
+      - name: PrimaryRecInd
+        start: 12
+        end: 13
+        equals: B
+      - name: ContnRecNum
+        start: 21
+        end: 22
+        equals: '0'
+      fields:
+        AirportICAOIdentifier:
+          start: 6
+          end: 10
+        GateIdentifier:
+          start: 13
+          end: 18
+        GateLatitude:
+          start: 32
+          end: 41
+        GateLongitude:
+          start: 41
+          end: 51
+        GateName:
+          start: 98
+          end: 123
+      validations:
+      - field: AirportICAOIdentifier
+        min_length: 3
+        max_length: 4
+      columns:
+      - name: PRODUCTID
+        source: concat
+        fields:
+        - AirportICAOIdentifier
+        - GateIdentifier
+      - name: ICAO_ARPT_CDE
+        source: field
+        field: AirportICAOIdentifier
+      - name: GATE_ID
+        source: field
+        field: GateIdentifier
+      - name: JEP_GATE_LAT
+        source: field
+        field: GateLatitude
+      - name: JEP_GATE_LONG
+        source: field
+        field: GateLongitude
+      - name: GATE_NME
+        source: field
+        field: GateName
+    runway:
+      description: Runway line G/1 -> LOC_RUNWAY_STG
+      output_file: LOC_RUNWAY_STG.csv
+      counted: false
+      discriminators:
+      - name: PrimaryRecInd
+        start: 12
+        end: 13
+        equals: G
+      - name: ContnRecNum
+        start: 21
+        end: 22
+        equals: '1'
+      fields:
+        AirportICAOIdentifier:
+          start: 6
+          end: 10
+        RNWY_ID:
+          start: 13
+          end: 18
+        RNWY_LGTH:
+          start: 22
+          end: 27
+        MAGNETIC_BEARG_DEG:
+          start: 27
+          end: 31
+        RNWY_LAT:
+          start: 32
+          end: 41
+        RNWY_LONG:
+          start: 41
+          end: 51
+        GRADIENT:
+          start: 51
+          end: 56
+        ELLIPSOIDAL_HT:
+          start: 60
+          end: 66
+        LNDG_THLD_ELEVATION:
+          start: 66
+          end: 71
+        DISPLACED_THLD_DIST:
+          start: 71
+          end: 75
+        THLD_XING_HT:
+          start: 75
+          end: 77
+        RNWY_WIDTH:
+          start: 77
+          end: 80
+        TCH_IND:
+          start: 80
+          end: 81
+        LCLZR_MLS_GLS_ID:
+          start: 81
+          end: 85
+        LCLZR_MLS_GLS_CTGY_CDE:
+          start: 85
+          end: 86
+        STOPWAY_LGTH:
+          start: 86
+          end: 90
+        SCDY_LCLZR_MLS_GLS_ID:
+          start: 90
+          end: 94
+        SCDY_LCLZR_MLS_GLS_CTGY_CDE:
+          start: 94
+          end: 95
+        RNWY_DESC:
+          start: 101
+          end: 123
+      validations:
+      - field: AirportICAOIdentifier
+        min_length: 3
+        max_length: 4
+      columns:
+      - name: PRODUCTID
+        source: concat
+        fields:
+        - AirportICAOIdentifier
+        - RNWY_ID
+      - name: ICAO_ARPT_CDE
+        source: field
+        field: AirportICAOIdentifier
+      - name: RNWY_ID
+        source: field
+        field: RNWY_ID
+      - name: RNWY_LGTH
+        source: field
+        field: RNWY_LGTH
+      - name: MAGNETIC_BEARG_DEG
+        source: field
+        field: MAGNETIC_BEARG_DEG
+      - name: JEP_RNWY_LAT
+        source: field
+        field: RNWY_LAT
+      - name: JEP_RNWY_LONG
+        source: field
+        field: RNWY_LONG
+      - name: GRADIENT
+        source: field
+        field: GRADIENT
+      - name: ELLIPSOIDAL_HT
+        source: field
+        field: ELLIPSOIDAL_HT
+      - name: LNDG_THLD_ELEVATION
+        source: field
+        field: LNDG_THLD_ELEVATION
+      - name: DISPLACED_THLD_DIST
+        source: field
+        field: DISPLACED_THLD_DIST
+      - name: THLD_XING_HT
+        source: field
+        field: THLD_XING_HT
+      - name: RNWY_WIDTH
+        source: field
+        field: RNWY_WIDTH
+      - name: THLD_XING_HT_CDE
+        source: field
+        field: TCH_IND
+      - name: LCLZR_MLS_GLS_ID
+        source: field
+        field: LCLZR_MLS_GLS_ID
+      - name: LCLZR_MLS_GLS_CTGY_CDE
+        source: field
+        field: LCLZR_MLS_GLS_CTGY_CDE
+      - name: STOPWAY_LGTH
+        source: field
+        field: STOPWAY_LGTH
+      - name: SCDY_LCLZR_MLS_GLS_ID
+        source: field
+        field: SCDY_LCLZR_MLS_GLS_ID
+      - name: SCDY_LCLZR_MLS_GLS_CTGY_CDE
+        source: field
+        field: SCDY_LCLZR_MLS_GLS_CTGY_CDE
+      - name: RNWY_DESC
+        source: field
+        field: RNWY_DESC
+bts:
+  columns:
+  - AIRPORT
+  - LAT_DEGREES
+  - LAT_HEMISPHERE
+  - LAT_MINUTES
+  - LAT_SECONDS
+  - LATITUDE
+  - LON_DEGREES
+  - LON_HEMISPHERE
+  - LON_MINUTES
+  - LON_SECONDS
+  - LONGITUDE
+  column_prefix: bts_
+  accept_rules:
+  - field: AIRPORT_IS_LATEST
+    equals: '1'
+  - field: AIRPORT_THRU_DATE
+    is_empty: true
+  output_file: LOC_AIRPORT_BTS_STG.csv
+errors:
+  headers:
+  - BUSINESSNAME
+  - BUSINESSKEY
+  - DATA
+  - EXCEPTION_TYPE
+  - BATCH_TYPE
+  - ERROR_CDE
+  report_file: ERROR_REPORT.csv
+  templates:
+    icao_invalid:
+      business_name: ICAO CODE
+      key_field: AirportICAOIdentifier
+      exception_type: DATAERROR
+      batch_type: MANUAL
+      error_cde: ICAO-ERR-1001
+    jep_lat_invalid:
+      business_name: JEP LATITUDE
+      exception_type: DATAERROR
+      batch_type: MANUAL
+      error_cde: JEPLAT-ERR-1001
+    jep_lon_invalid:
+      business_name: JEP LONGITUDE
+      exception_type: DATAERROR
+      batch_type: MANUAL
+      error_cde: JEPLON-ERR-1001
+    bts_lat_invalid:
+      business_name: BTS LATITUDE
+      exception_type: DATAERROR
+      batch_type: MANUAL
+      error_cde: BTSLAT-ERR-1001
+    bts_lon_invalid:
+      business_name: BTS LONGITUDE
+      exception_type: DATAERROR
+      batch_type: MANUAL
+      error_cde: BTSLON-ERR-1001
+outputs:
+  metadata:
+    file: output/OPS_Process_Data.csv
+    columns:
+    - run_timestamp
+    - status
+    - stage
+    - tag
+    - summary
+    - output
+    - error_report
+innovata:
+  _comment: Mapping follows KT document v16 section 2.4 (station tokens 1,4,5,6,9
+    and all 11 time zone tokens). GMTVAR is copied as is into TM_ZN_UTC_OFST_MIN_NUM,
+    as the production parser does; use source tz_offset_min instead to convert it
+    to minutes.
+  table: LOC_TMZN_STG
+  output_file: stage/LOC_TMZN_STG.csv
+  errors_file: innovata_errors.csv
+  station_text_check_fields:
+  - STANAME
+  - CITYNAME
+  special_char_pattern: '[^\x20-\x7E]'
+  tz_period_mode: all
+  as_of_date: null
+  columns:
+  - name: BATCHID
+    source: batch_id
+  - name: IATA_ARPT_CDE
+    source: station
+    field: STACODE
+  - name: TM_ZN_CDE
+    source: station
+    field: TZCODE
+  - name: TM_ZN_NME
+    source: tz
+    field: TZNAME
+  - name: CTRY_CDE
+    source: station
+    field: CNTRYCODE
+  - name: CTRY_NME
+    source: tz
+    field: CNTRYNAME
+  - name: TM_ZN_OFST_STRT_DT
+    source: tz
+    field: EFFDATE
+  - name: TM_ZN_OFST_END_DT
+    source: tz
+    field: DISCDATE
+  - name: TM_ZN_OFST_STRT_DT_IND
+    source: tz
+    field: EFFSTATUS
+  - name: TM_ZN_OFST_END_DT_IND
+    source: tz
+    field: DISCSTATUS
+  - name: TM_ZN_OFST_STRT_TM
+    source: tz
+    field: EFFTIME
+  - name: TM_ZN_OFST_END_TM
+    source: tz
+    field: DISCTIME
+  - name: TM_ZN_UTC_OFST_MIN_NUM
+    source: tz
+    field: GMTVAR
+  - name: CITY_NME
+    source: station
+    field: CITYNAME
+  - name: ST_PRVC_NME
+    source: station
+    field: STATEPROVCODE
+  status: pending-input-files

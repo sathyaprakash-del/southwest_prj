@@ -1,0 +1,306 @@
+{
+  "_comment": "Config for jeppesen_parser.py. Stages run in this order: Jeppesen -> BTS -> Innovata -> Olson (IANA time zone database). Offsets are 0-based, end exclusive. Output file and column names follow the Oracle staging tables in MDM_DB_Tables_columns.csv.",
+  "run": {
+    "data_directory": ".",
+    "output_directory": "output",
+    "batch_id": null,
+    "batch_id_format": "%Y%j%H%M%S",
+    "run_indicator": "MANUAL",
+    "domain": "AIRPORT",
+    "status_file": "pipeline_status.json"
+  },
+  "sources": {
+    "jeppesen": {"file_path": "SWA_JEPPESEN__1_.dat", "encoding": "latin-1", "required": true},
+    "bts": {"file_path": "SWA_BTS.csv", "encoding": "utf-8-sig", "delimiter": ",", "required": true},
+    "innovata_stn": {"file_path": "SWA_INV_STN.dat", "encoding": "latin-1", "delimiter": "\t", "required": true},
+    "innovata_tz": {"file_path": "SWA_INV_TZ.dat", "encoding": "latin-1", "delimiter": "\t", "required": true},
+    "olson": {
+      "file_path": "loc_olson_id_stg_export.csv",
+      "encoding": "utf-8-sig",
+      "delimiter": ",",
+      "required": false,
+      "note": "Optional. The earlier Google result. Only used to compare with the IANA result (olson.iana.compare_with_csv) or as the source when olson.source is csv."
+    },
+    "db_schema": {
+      "file_path": "MDM_DB_Tables_columns.csv",
+      "encoding": "utf-8-sig",
+      "required": false,
+      "note": "Table and column list of the Oracle schema. Used to check every output file and the 250 character limit."
+    }
+  },
+  "schema_check": {"enabled": true, "fail_on_mismatch": true},
+  "joins": {
+    "_comment": "How the files relate.",
+    "airport_code": {
+      "jeppesen_column": "IATA_ARPT_CDE",
+      "bts_field": "AIRPORT",
+      "innovata_station_field": "STACODE",
+      "note": "3-letter IATA code. Jeppesen, BTS and Innovata share only this code."
+    },
+    "station_to_timezone": {
+      "station_fields": ["CNTRYCODE", "TZCODE"],
+      "timezone_fields": ["CNTRYCODE", "TZCODE"],
+      "note": "One station maps to several timezone rows, one per DST period."
+    },
+    "olson": {
+      "jeppesen_column": "ICAO_ARPT_CDE",
+      "olson_field": "ICAO_CDE",
+      "note": "The Google time zone result is keyed on the 4-letter ICAO code (3 for some small airfields), not IATA."
+    }
+  },
+  "jeppesen": {
+    "trim_values": true,
+    "sql_escape_apostrophes": false,
+    "failure_threshold_percent": 1,
+    "errors_file": "jeppesen_errors.csv",
+    "record_types": {
+      "airport": {
+        "description": "Airport line A/1 -> LOC_ARPT_STG",
+        "output_file": "LOC_ARPT_STG.csv",
+        "declared_line_length": 124,
+        "discriminators": [
+          {"name": "PrimaryRecInd", "start": 12, "end": 13, "equals": "A"},
+          {"name": "ContnRecNum", "start": 21, "end": 22, "equals": "1"}
+        ],
+        "fields": {
+          "AirportICAOIdentifier": {"start": 6, "end": 10},
+          "ATAIATADesignator": {"start": 13, "end": 16},
+          "SpeedLimitAltitude": {"start": 22, "end": 27},
+          "LongestRunway": {"start": 27, "end": 30},
+          "IFR_Ind": {"start": 30, "end": 31},
+          "LongestRunWaySurfaceCode": {"start": 31, "end": 32},
+          "AirportRefPtLatitude": {"start": 32, "end": 41},
+          "AirportRefPtLongitude": {"start": 41, "end": 51},
+          "MagneticVariation": {"start": 51, "end": 56},
+          "AirportElevation": {"start": 56, "end": 61},
+          "SpeedLimit": {"start": 61, "end": 64},
+          "RecommendedNavaid": {"start": 64, "end": 68},
+          "TransitionAltitude": {"start": 70, "end": 75},
+          "TransitionLevel": {"start": 75, "end": 80},
+          "StationCategoryCode": {"start": 80, "end": 81},
+          "TimeZone": {"start": 81, "end": 84},
+          "DaylightIndicator": {"start": 84, "end": 85},
+          "MagneticTrueIndicator": {"start": 85, "end": 86},
+          "DatumCode": {"start": 86, "end": 89},
+          "AirportName": {"start": 93, "end": 123, "escape_apostrophes": true}
+        },
+        "validations": [{"field": "AirportICAOIdentifier", "min_length": 3, "max_length": 4}],
+        "columns": [
+          {"name": "BATCHID", "source": "batch_id"},
+          {"name": "PRODUCTID", "source": "field", "field": "AirportICAOIdentifier"},
+          {"name": "ICAO_ARPT_CDE", "source": "field", "field": "AirportICAOIdentifier"},
+          {"name": "IATA_ARPT_CDE", "source": "field", "field": "ATAIATADesignator"},
+          {"name": "IATA_REGN_CDE", "source": "literal", "value": ""},
+          {"name": "LONGEST_RNWY", "source": "field", "field": "LongestRunway"},
+          {"name": "LONGEST_RNWY_SRFC_CDE", "source": "field", "field": "LongestRunWaySurfaceCode"},
+          {"name": "MAGNETIC_VARIATION", "source": "field", "field": "MagneticVariation"},
+          {"name": "ELEVATION", "source": "field", "field": "AirportElevation"},
+          {"name": "SPD_LMT_ALT", "source": "field", "field": "SpeedLimitAltitude"},
+          {"name": "SPD_LMT", "source": "field", "field": "SpeedLimit"},
+          {"name": "RECMD_NAV_AID", "source": "field", "field": "RecommendedNavaid"},
+          {"name": "TRANSITION_ALT", "source": "field", "field": "TransitionAltitude"},
+          {"name": "MAGNETIC_TRUE_NORTH_IND", "source": "field", "field": "MagneticTrueIndicator"},
+          {"name": "TRANSITION_LVL", "source": "field", "field": "TransitionLevel"},
+          {"name": "DATUM_CDE", "source": "field", "field": "DatumCode"},
+          {"name": "ATA_IATA_DSGN_CDE", "source": "field", "field": "ATAIATADesignator"},
+          {"name": "STN_CTGY_CDE", "source": "field", "field": "StationCategoryCode"},
+          {"name": "ARPT_NME", "source": "field", "field": "AirportName"},
+          {"name": "DLS_TM_IND", "source": "field", "field": "DaylightIndicator"},
+          {"name": "INST_FLT_RULE_IND", "source": "field", "field": "IFR_Ind"},
+          {"name": "JEP_ARPT_LAT", "source": "field", "field": "AirportRefPtLatitude"},
+          {"name": "JEP_ARPT_LONG", "source": "field", "field": "AirportRefPtLongitude"},
+          {"name": "JEP_TZ_IND", "source": "field", "field": "TimeZone"}
+        ],
+        "table": "LOC_ARPT_STG",
+        "trailing_blank_columns": ["PROCESSED", "CREPORT_STATUS"]
+      },
+      "gate": {
+        "description": "Gate line B/0 -> LOC_GATE_STG",
+        "output_file": "LOC_GATE_STG.csv",
+        "declared_line_length": 123,
+        "discriminators": [
+          {"name": "PrimaryRecInd", "start": 12, "end": 13, "equals": "B"},
+          {"name": "ContnRecNum", "start": 21, "end": 22, "equals": "0"}
+        ],
+        "fields": {
+          "AirportICAOIdentifier": {"start": 6, "end": 10},
+          "GateIdentifier": {"start": 13, "end": 18},
+          "GateLatitude": {"start": 32, "end": 41},
+          "GateLongitude": {"start": 41, "end": 51},
+          "GateName": {"start": 98, "end": 123}
+        },
+        "validations": [{"field": "AirportICAOIdentifier", "min_length": 3, "max_length": 4}],
+        "columns": [
+          {"name": "BATCHID", "source": "batch_id"},
+          {"name": "PRODUCTID", "source": "concat", "fields": ["AirportICAOIdentifier", "GateIdentifier"]},
+          {"name": "ICAO_ARPT_CDE", "source": "field", "field": "AirportICAOIdentifier"},
+          {"name": "GATE_ID", "source": "field", "field": "GateIdentifier"},
+          {"name": "GATE_NME", "source": "field", "field": "GateName"},
+          {"name": "JEP_GATE_LAT", "source": "field", "field": "GateLatitude"},
+          {"name": "JEP_GATE_LONG", "source": "field", "field": "GateLongitude"}
+        ],
+        "table": "LOC_GATE_STG"
+      },
+      "runway": {
+        "description": "Runway line G/1 -> LOC_RNWY_STG",
+        "output_file": "LOC_RNWY_STG.csv",
+        "declared_line_length": 95,
+        "discriminators": [
+          {"name": "PrimaryRecInd", "start": 12, "end": 13, "equals": "G"},
+          {"name": "ContnRecNum", "start": 21, "end": 22, "equals": "1"}
+        ],
+        "fields": {
+          "AirportICAOIdentifier": {"start": 6, "end": 10},
+          "RNWY_ID": {"start": 13, "end": 18},
+          "RNWY_LGTH": {"start": 22, "end": 27},
+          "RNWY_DESC": {"start": 101, "end": 123},
+          "MAGNETIC_BEARG_DEG": {"start": 27, "end": 31},
+          "RNWY_LAT": {"start": 32, "end": 41},
+          "RNWY_LONG": {"start": 41, "end": 51},
+          "GRADIENT": {"start": 51, "end": 56},
+          "ELLIPSOIDAL_HT": {"start": 60, "end": 66},
+          "LNDG_THLD_ELEVATION": {"start": 66, "end": 71},
+          "DISPLACED_THLD_DIST": {"start": 71, "end": 75},
+          "THLD_XING_HT": {"start": 75, "end": 77},
+          "RNWY_WIDTH": {"start": 77, "end": 80},
+          "TCH_IND": {"start": 80, "end": 81},
+          "LCLZR_MLS_GLS_ID": {"start": 81, "end": 85},
+          "LCLZR_MLS_GLS_CTGY_CDE": {"start": 85, "end": 86},
+          "STOPWAY_LGTH": {"start": 86, "end": 90},
+          "SCDY_LCLZR_MLS_GLS_ID": {"start": 90, "end": 94},
+          "SCDY_LCLZR_MLS_GLS_CTGY_CDE": {"start": 94, "end": 95}
+        },
+        "validations": [{"field": "AirportICAOIdentifier", "min_length": 3, "max_length": 4}],
+        "columns": [
+          {"name": "BATCHID", "source": "batch_id"},
+          {"name": "PRODUCTID", "source": "concat", "fields": ["AirportICAOIdentifier", "RNWY_ID"]},
+          {"name": "ICAO_ARPT_CDE", "source": "field", "field": "AirportICAOIdentifier"},
+          {"name": "RNWY_ID", "source": "field", "field": "RNWY_ID"},
+          {"name": "RNWY_DESC", "source": "field", "field": "RNWY_DESC"},
+          {"name": "RNWY_LGTH", "source": "field", "field": "RNWY_LGTH"},
+          {"name": "GRADIENT", "source": "field", "field": "GRADIENT"},
+          {"name": "ELLIPSOIDAL_HT", "source": "field", "field": "ELLIPSOIDAL_HT"},
+          {"name": "LNDG_THLD_ELEVATION", "source": "field", "field": "LNDG_THLD_ELEVATION"},
+          {"name": "DISPLACED_THLD_DIST", "source": "field", "field": "DISPLACED_THLD_DIST"},
+          {"name": "THLD_XING_HT_CDE", "source": "field", "field": "TCH_IND"},
+          {"name": "THLD_XING_HT", "source": "field", "field": "THLD_XING_HT"},
+          {"name": "STOPWAY_LGTH", "source": "field", "field": "STOPWAY_LGTH"},
+          {"name": "MAGNETIC_BEARG_DEG", "source": "field", "field": "MAGNETIC_BEARG_DEG"},
+          {"name": "LCLZR_MLS_GLS_CTGY_CDE", "source": "field", "field": "LCLZR_MLS_GLS_CTGY_CDE"},
+          {"name": "LCLZR_MLS_GLS_ID", "source": "field", "field": "LCLZR_MLS_GLS_ID"},
+          {"name": "SCDY_LCLZR_MLS_GLS_ID", "source": "field", "field": "SCDY_LCLZR_MLS_GLS_ID"},
+          {"name": "SCDY_LCLZR_MLS_GLS_CTGY_CDE", "source": "field", "field": "SCDY_LCLZR_MLS_GLS_CTGY_CDE"},
+          {"name": "RNWY_WIDTH", "source": "field", "field": "RNWY_WIDTH"},
+          {"name": "JEP_RNWY_LAT", "source": "field", "field": "RNWY_LAT"},
+          {"name": "JEP_RNWY_LONG", "source": "field", "field": "RNWY_LONG"}
+        ],
+        "table": "LOC_RNWY_STG"
+      }
+    }
+  },
+  "bts": {
+    "table": "LOC_ARPT_STG",
+    "accept_rules": [{"field": "AIRPORT_IS_LATEST", "equals": "1"}, {"field": "AIRPORT_THRU_DATE", "is_empty": true}],
+    "report_rejects": true,
+    "rejects_file": "bts_rejects.csv",
+    "reject_report_columns": [
+      "AIRPORT",
+      "AIRPORT_ID",
+      "DISPLAY_AIRPORT_NAME",
+      "AIRPORT_COUNTRY_CODE_ISO",
+      "AIRPORT_IS_LATEST",
+      "AIRPORT_THRU_DATE",
+      "AIRPORT_IS_CLOSED"
+    ],
+    "errors_file": "bts_errors.csv",
+    "staging_columns": [
+      {"column": "BTS_ARPT_LAT", "field": "LATITUDE", "trim": true},
+      {"column": "BTS_ARPT_LAT_HMSP_CDE", "field": "LAT_HEMISPHERE"},
+      {"column": "BTS_ARPT_LAT_DEG", "field": "LAT_DEGREES"},
+      {"column": "BTS_ARPT_LAT_MIN", "field": "LAT_MINUTES"},
+      {"column": "BTS_ARPT_LAT_SECD", "field": "LAT_SECONDS"},
+      {"column": "BTS_ARPT_LONG", "field": "LONGITUDE"},
+      {"column": "BTS_ARPT_LONG_HMSP_CDE", "field": "LON_HEMISPHERE"},
+      {"column": "BTS_ARPT_LONG_DEG", "field": "LON_DEGREES"},
+      {"column": "BTS_ARPT_LONG_MIN", "field": "LON_MINUTES"},
+      {"column": "BTS_ARPT_LONG_SECD", "field": "LON_SECONDS"}
+    ],
+    "location_check_km": 25,
+    "skip_on_location_mismatch": false
+  },
+  "innovata": {
+    "_comment": "Mapping follows KT document v16 section 2.4 (station tokens 1,4,5,6,9 and all 11 time zone tokens). GMTVAR is copied as is into TM_ZN_UTC_OFST_MIN_NUM, as the production parser does; use source tz_offset_min instead to convert it to minutes.",
+    "table": "LOC_TMZN_STG",
+    "output_file": "LOC_TMZN_STG.csv",
+    "errors_file": "innovata_errors.csv",
+    "station_text_check_fields": ["STANAME", "CITYNAME"],
+    "special_char_pattern": "[^\\x20-\\x7E]",
+    "tz_period_mode": "all",
+    "as_of_date": null,
+    "columns": [
+      {"name": "BATCHID", "source": "batch_id"},
+      {"name": "IATA_ARPT_CDE", "source": "station", "field": "STACODE"},
+      {"name": "TM_ZN_CDE", "source": "station", "field": "TZCODE"},
+      {"name": "TM_ZN_NME", "source": "tz", "field": "TZNAME"},
+      {"name": "CTRY_CDE", "source": "station", "field": "CNTRYCODE"},
+      {"name": "CTRY_NME", "source": "tz", "field": "CNTRYNAME"},
+      {"name": "TM_ZN_OFST_STRT_DT", "source": "tz", "field": "EFFDATE"},
+      {"name": "TM_ZN_OFST_END_DT", "source": "tz", "field": "DISCDATE"},
+      {"name": "TM_ZN_OFST_STRT_DT_IND", "source": "tz", "field": "EFFSTATUS"},
+      {"name": "TM_ZN_OFST_END_DT_IND", "source": "tz", "field": "DISCSTATUS"},
+      {"name": "TM_ZN_OFST_STRT_TM", "source": "tz", "field": "EFFTIME"},
+      {"name": "TM_ZN_OFST_END_TM", "source": "tz", "field": "DISCTIME"},
+      {"name": "TM_ZN_UTC_OFST_MIN_NUM", "source": "tz", "field": "GMTVAR"},
+      {"name": "CITY_NME", "source": "station", "field": "CITYNAME"},
+      {"name": "ST_PRVC_NME", "source": "station", "field": "STATEPROVCODE"}
+    ]
+  },
+  "olson": {
+    "_comment": "source = iana reads the time zone from the python libraries (timezonefinder for latitude/longitude to zone name, tzdata = IANA release 2026f for the rules and offsets). source = csv reads the Google export file instead.",
+    "source": "iana",
+    "table": "LOC_OLSON_ID_STG",
+    "output_file": "LOC_OLSON_ID_STG.csv",
+    "errors_file": "olson_errors.csv",
+    "columns": ["BATCHID", "ICAO_CDE", "OLSON_ID", "RAWOFFSET"],
+    "iana": {
+      "mismatch_guard": true,
+      "mismatch_km": 25,
+      "use_innovata_last_resort": true,
+      "offset_year": null,
+      "min_tzdata_version": "2026f",
+      "lookup_report_file": "olson_lookup_report.csv",
+      "compare_with_csv": true,
+      "compare_file": "olson_vs_google.csv"
+    },
+    "batch_id_mode": "run",
+    "icao_min_length": 3,
+    "icao_max_length": 4,
+    "olson_id_pattern": "^[A-Za-z_]+(/[A-Za-z0-9_+\\-]+)*$",
+    "rawoffset_pattern": "^-?\\d+$",
+    "duplicate_policy": "first_wins"
+  },
+  "batch_stat": {
+    "_comment": "One LOC_BATCH_STAT row per source file. Only the Jeppesen comment text is taken from the KT document; the others are placeholders.",
+    "table": "LOC_BATCH_STAT",
+    "output_file": "LOC_BATCH_STAT.csv",
+    "columns": [
+      "BATCHID",
+      "DOMAIN",
+      "DS_FILE_NM",
+      "TOT_REC_CNT",
+      "SUCCESS_REC_CNT",
+      "FAILURE_REC_CNT",
+      "STATUS",
+      "COMMENTS",
+      "REMEDIATION_STATUS",
+      "BATCH_TYPE"
+    ],
+    "comments": {
+      "jeppesen": "Jeppesen - Staging table load is completed",
+      "bts": "BTS - Staging table update is completed",
+      "innovata": "Innovata - Staging table load is completed",
+      "olson": "Olson - Staging table load is completed"
+    }
+  },
+  "xref": {"file": "AIRPORT_XREF.csv", "coordinate_check_km": 25}
+}
