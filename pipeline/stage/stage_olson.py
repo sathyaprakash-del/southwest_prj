@@ -25,8 +25,6 @@ log = logging.getLogger(__name__)
 
 _CONFIG = APP.config
 _OLSON = _CONFIG.get("olson", {})
-_SOURCES = _CONFIG.get("sources", {})
-_JOINS = _CONFIG.get("joins", {})
 
 OUTPUT_CSV = APP.olson_output
 OLSON_CSV = APP.olson_csv
@@ -83,8 +81,7 @@ class OlsonLoader:
                   "batch_id_differs": 0, "in_jeppesen": 0, "not_in_jeppesen": 0,
                   "jeppesen_without_olson": 0}
 
-        for idx, r in df_raw.iterrows():
-            line_no = idx + 2
+        for _, r in df_raw.iterrows():
             counts["rows_read"] += 1
             icao = str(r.get("ICAO_CDE", "")).strip()
             oid = str(r.get("OLSON_ID", "")).strip()
@@ -113,15 +110,12 @@ class OlsonLoader:
                 else:
                     errors.add(err_tpl, icao, data, tag="olson")
                 continue
-            if icao in seen:  # safety, already handled
-                continue
             batch = run_batch if batch_mode == "run" else (file_batch or run_batch)
             if file_batch and file_batch != batch:
                 counts["batch_id_differs"] += 1
                 ignores.add("olson_batch_diff", icao, data, tag="olson")
             seen[icao] = {"olson_id": oid, "raw": raw}
             rows.append({"BATCHID": batch, "ICAO_CDE": icao, "OLSON_ID": oid, "RAWOFFSET": raw})
-            counts["duplicates"] += 0  # dup counted on fail path
             counts["loaded"] += 1
 
         # audit vs Jeppesen ICAO (no filter, audit only)
@@ -141,9 +135,6 @@ class OlsonLoader:
                 log.warning("Jeppesen STG not found for Olson audit: %s", jep_path)
         except (KeyError, ValueError, TypeError, OSError) as e:
             log.warning("Olson Jeppesen audit failed: %s", e)
-
-        # fix duplicates count: failed dups were counted, recount precisely
-        # (counts['duplicates'] already incremented on dup fail path)
 
         df = pd.DataFrame(rows, columns=cols)
         if not df.empty:

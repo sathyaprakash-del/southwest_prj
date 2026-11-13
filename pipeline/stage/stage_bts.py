@@ -64,7 +64,7 @@ def collect_bts_ignores(df_airport: pd.DataFrame | None = None) -> ErrorCapture:
         return ignores
     rules = _CONFIG["bts"].get("accept_rules", [])
     # accept-rule rejects
-    for idx, r in df_full.iterrows():
+    for _, r in df_full.iterrows():
         fail_latest = (r.get("AIRPORT_IS_LATEST", "") != "1")
         fail_thru = (r.get("AIRPORT_THRU_DATE", "") != "")
         if fail_latest or fail_thru:
@@ -86,7 +86,8 @@ def collect_bts_ignores(df_airport: pd.DataFrame | None = None) -> ErrorCapture:
             df_f = df_f.drop_duplicates(subset=[RIGHT_KEY], keep="first")
             for _, r in df_f.iterrows():
                 if r.get(RIGHT_KEY, "") not in jkeys:
-                    ignores.add("bts_no_jep", r.get(RIGHT_KEY, ""), "|".join(str(r.get(c, "")) for c in BTS_COLUMNS), tag="bts")
+                    bts_data = "|".join(str(r.get(c, "")) for c in BTS_COLUMNS)
+                    ignores.add("bts_no_jep", r.get(RIGHT_KEY, ""), bts_data, tag="bts")
     except (KeyError, ValueError, AttributeError) as e:
         log.warning("BTS no-jep ignore failed: %s", e)
     return ignores
@@ -154,8 +155,9 @@ def resolve_final_coords(merged: pd.DataFrame, errors) -> pd.DataFrame:
     fail_cnt = 0
     for _, r in merged.iterrows():
         key = r.get(Constants.COL_PRODUCT_ID, "") or r.get(LEFT_KEY, "")
-        lat, lon, _problems = errors.check(r.get(Constants.COL_BTS_LAT, ""), r.get(Constants.COL_BTS_LON, ""),
-                                           source="BTS", record_id=key, tag=Constants.TAG_AIRPORT)
+        lat, lon, _ = errors.check(
+            r.get(Constants.COL_BTS_LAT, ""), r.get(Constants.COL_BTS_LON, ""),
+            source="BTS", record_id=key, tag=Constants.TAG_AIRPORT)
         if lat is not None and lon is not None:
             final_lat.append(str(lat))
             final_lon.append(str(lon))

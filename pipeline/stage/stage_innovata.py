@@ -32,6 +32,7 @@ _INNOVATA = _CONFIG.get("innovata", {})
 _SOURCES = _CONFIG.get("sources", {})
 _JOINS = _CONFIG.get("joins", {})
 
+
 # Output: config has "stage/LOC_TMZN_STG.csv" (relative to output/)
 def _resolve_output() -> Path:
     out_file = _INNOVATA.get("output_file", "stage/LOC_TMZN_STG.csv")
@@ -45,6 +46,7 @@ def _resolve_output() -> Path:
 
 
 OUTPUT_CSV = _resolve_output()
+
 
 def _resolve_log() -> Path:
     try:
@@ -208,7 +210,7 @@ class InnovataParser:
 
         log.info("Loading Innovata STN %s (mode=%s as_of=%s)", stn_path, mode, as_of.date())
         with stn_path.open("r", encoding=stn_enc, newline="") as fh:
-            for line_no, stn in enumerate(csv.DictReader(fh, delimiter=stn_delim), 2):
+            for _, stn in enumerate(csv.DictReader(fh, delimiter=stn_delim), 2):
                 counts["stations_read"] += 1
                 code = (stn.get(stn_key, "") or "").strip()
                 periods = tz_index.get(tuple((stn.get(f, "") or "").strip() for f in st_fields))

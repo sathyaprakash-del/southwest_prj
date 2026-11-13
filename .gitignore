@@ -5,3 +5,4 @@ output/
 logs/*.log
 .idea/
 .vscode/
+demo/

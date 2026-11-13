@@ -1,9 +1,9 @@
-"""Shared lat/lon check and error capture used by jeppesen and bts stages."""
+"""Shared lat/lon check and error capture used by stages."""
 from datetime import datetime
 
 import pandas as pd
 
-from utils.common import Constants, CoordConverter, load_config
+from utils.common import Constants, CoordConverter, GeoValidator, load_config
 from utils.exceptions import PipelineError
 
 
@@ -25,11 +25,16 @@ def check_lat_lon(raw_lat, raw_lon):
     lon, lon_state = _to_decimal(raw_lon, False)
     if lat_state == "blank" and lon_state == "blank":
         return None, None, []
-    problems = []
-    if lat is None or lat_state != "ok" or not -90.0 <= lat <= 90.0:
+    # general geopy range validation, no hardcoded limits
+    lat, lon, problems = GeoValidator.validate(
+        lat if lat_state == "ok" else "invalid",
+        lon if lon_state == "ok" else "invalid",
+    )
+    # preserve invalid-string cases already flagged by _to_decimal
+    if lat_state == "invalid" and "lat" not in problems:
         problems.append("lat")
         lat = None
-    if lon is None or lon_state != "ok" or not -180.0 <= lon <= 180.0:
+    if lon_state == "invalid" and "lon" not in problems:
         problems.append("lon")
         lon = None
     return lat, lon, problems

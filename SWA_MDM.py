@@ -10,7 +10,6 @@ from utils.summary import StageSummary
 
 log = logging.getLogger("SWA_MDM")
 
-_CONFIG = APP.config
 INPUT_DAT = APP.input_dat
 HISTORY_DIR = APP.history_dir
 HISTORY_PREFIX = APP.history_prefix

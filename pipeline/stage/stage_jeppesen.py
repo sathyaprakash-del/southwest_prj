@@ -156,7 +156,9 @@ def check_threshold(total_airports: int, failures: int, threshold_percent: float
     return True
 
 
-def save_outputs(frames: dict[str, pd.DataFrame], error_df: pd.DataFrame, ignore_df: pd.DataFrame | None = None) -> None:
+def save_outputs(
+    frames: dict[str, pd.DataFrame], error_df: pd.DataFrame, ignore_df: pd.DataFrame | None = None
+) -> None:
     APP.stage_dir.mkdir(parents=True, exist_ok=True)
     for rtype, df in frames.items():
         out = APP.stage_dir / APP.config["jeppesen"]["record_types"][rtype]["output_file"]

@@ -37,17 +37,22 @@ class StageSummary:
 
     @staticmethod
     def innovata(counts):
+        failed = counts.get('failed_special_chars', 0)
+        failed += counts.get('failed_no_timezone', 0)
+        failed += counts.get('failed_no_current_period', 0)
         return f"innovata_stations={counts.get('stations_read', '')} " \
                f"loaded={counts.get('stations_loaded', '')} " \
-               f"rows={counts.get('rows_written', '')} " \
-               f"errors={counts.get('failed_special_chars', 0) + counts.get('failed_no_timezone', 0) + counts.get('failed_no_current_period', 0)} " \
-               f"(special={counts.get('failed_special_chars', 0)} no_tz={counts.get('failed_no_timezone', 0)} no_cur={counts.get('failed_no_current_period', 0)})"
+               f"rows={counts.get('rows_written', '')} errors={failed} " \
+               f"(special={counts.get('failed_special_chars', 0)} " \
+               f"no_tz={counts.get('failed_no_timezone', 0)} " \
+               f"no_cur={counts.get('failed_no_current_period', 0)})"
 
     @staticmethod
     def olson(counts):
-        return f"olson_rows={counts.get('rows_read', '')} loaded={counts.get('loaded', '')} " \
-               f"failed={counts.get('failed', 0)} dups={counts.get('duplicates', 0)} " \
-               f"in_jep={counts.get('in_jeppesen', 0)} not_in_jep={counts.get('not_in_jeppesen', 0)} " \
+        return f"olson_rows={counts.get('rows_read', '')} " \
+               f"loaded={counts.get('loaded', '')} failed={counts.get('failed', 0)} " \
+               f"dups={counts.get('duplicates', 0)} in_jep={counts.get('in_jeppesen', 0)} " \
+               f"not_in_jep={counts.get('not_in_jeppesen', 0)} " \
                f"jep_without_olson={counts.get('jeppesen_without_olson', 0)}"
 
     @staticmethod
@@ -55,8 +60,3 @@ class StageSummary:
         return f"olson_pip_read={counts.get('rows_read', '')} loaded={counts.get('loaded', '')} " \
                f"failed={counts.get('failed', 0)} no_zone={counts.get('no_zone', 0)} " \
                f"bad_coords={counts.get('bad_coords', 0)}"
-
-    @staticmethod
-    def ignore(counts):
-        return f"ignore_total={counts.get('total', '')} " + \
-               " ".join(f"{k}={v}" for k, v in sorted(counts.items()) if k != "total")

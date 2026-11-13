@@ -38,8 +38,62 @@ def setup_logging(name: str, log_file: Path) -> Path:
     return log_file
 
 
+class GeoValidator:
+    """General lat/lon validation via geopy. No hardcoded ranges, no stage names."""
+    @staticmethod
+    def to_float(value) -> float | None:
+        import pandas as pd
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+        s = str(value).strip()
+        if s == "" or s.lower() == "nan":
+            return None
+        try:
+            f = float(s)
+        except ValueError:
+            return None
+        try:
+            if pd.isna(f):
+                return None
+        except (TypeError, ValueError):
+            pass
+        return f
+
+    @staticmethod
+    def _check_one(val: float, is_lat: bool) -> bool:
+        from geopy.point import Point
+        try:
+            if is_lat:
+                # geopy raises for latitude outside its range
+                Point(latitude=val, longitude=0)
+                return True
+            # geopy normalizes longitude (200 -> -160); reject if changed
+            return Point(latitude=0, longitude=val).longitude == float(val)
+        except ValueError:
+            return False
+
+    @staticmethod
+    def validate(lat_raw, lon_raw) -> tuple[float | None, float | None, list]:
+        lat, lon = GeoValidator.to_float(lat_raw), GeoValidator.to_float(lon_raw)
+        if lat is None and lon is None:
+            return None, None, []
+        problems = []
+        if lat is None or not GeoValidator._check_one(lat, True):
+            problems.append("lat")
+            lat = None
+        if lon is None or not GeoValidator._check_one(lon, False):
+            problems.append("lon")
+            lon = None
+        return lat, lon, problems
+
+
 class CoordConverter:
-    """Packed DMS <-> decimal + DMS display + BTS decimal validation."""
+    """Packed DMS <-> decimal + DMS display."""
     @staticmethod
     def packed_to_decimal(packed: str, is_lat: bool = True) -> float | None:
         if packed is None:
@@ -97,40 +151,6 @@ class CoordConverter:
         except (ValueError, IndexError):
             return None
 
-    @staticmethod
-    def valid_bts_decimal(val, is_lat: bool, logger=None) -> float | None:
-        import pandas as pd
-        if val is None:
-            return None
-        try:
-            if pd.isna(val):
-                return None
-        except (TypeError, ValueError):
-            pass
-        s = str(val).strip()
-        if s == "" or s.lower() == "nan":
-            return None
-        try:
-            f = float(s)
-        except ValueError:
-            if logger:
-                logger.warning("BTS present-but-invalid value %r; will fall back to Jeppesen", val)
-            return None
-        try:
-            if pd.isna(f):
-                return None
-        except (TypeError, ValueError):
-            pass
-        if is_lat and not (-90.0 <= f <= 90.0):
-            if logger:
-                logger.warning("BTS latitude out of range %r; will fall back to Jeppesen", val)
-            return None
-        if not is_lat and not (-180.0 <= f <= 180.0):
-            if logger:
-                logger.warning("BTS longitude out of range %r; will fall back to Jeppesen", val)
-            return None
-        return f
-
 
 class FileHelper:
     """History archive + misc file ops."""
@@ -170,15 +190,11 @@ class AppConfig:
         self.stage_dir = BASE_DIR / dirs["stage"]
         self.history_dir = BASE_DIR / dirs["history"]
         self.history_prefix = dirs["history_prefix"]
-        self.logs_dir = BASE_DIR / dirs["logs"]
         self.jeppesen_log = BASE_DIR / logs["jeppesen"]
         self.bts_log = BASE_DIR / logs["bts"]
         self.mdm_log = BASE_DIR / logs["mdm"]
         self.input_dat = BASE_DIR / sources["jeppesen"]["file_path"]
-        self.input_encoding = sources["jeppesen"].get("encoding", "utf-8")
         self.bts_csv = BASE_DIR / sources["bts"]["file_path"]
-        self.bts_encoding = sources["bts"].get("encoding", "utf-8")
-        self.bts_delimiter = sources["bts"].get("delimiter", ",")
         self.stage_files = {rt: self.stage_dir / rc["output_file"]
                             for rt, rc in self.config["jeppesen"]["record_types"].items()}
         self.airport_stg = self.stage_files["airport"]
@@ -187,10 +203,10 @@ class AppConfig:
         # Innovata (optional files, required=false, independent no join)
         innov = self.config.get("innovata", {})
         innov_out = innov.get("output_file", "stage/LOC_TMZN_STG.csv")
-        self.innovata_output = (self.output_dir / innov_out) if str(innov_out).startswith("stage/") else (self.stage_dir / Path(innov_out).name)
-        self.innovata_stn = BASE_DIR / sources.get("innovata_stn", {}).get("file_path", "input/SWA_INV_STN.dat")
-        self.innovata_tz = BASE_DIR / sources.get("innovata_tz", {}).get("file_path", "input/SWA_INV_TZ.dat")
-        self.innovata_log = BASE_DIR / logs.get("innovata", "logs/stage_innovata.log")
+        if str(innov_out).startswith("stage/"):
+            self.innovata_output = self.output_dir / innov_out
+        else:
+            self.innovata_output = self.stage_dir / Path(innov_out).name
         # Olson (csv direct source)
         olson_cfg = self.config.get("olson", {})
         olson_src = sources.get("olson", {})
@@ -198,17 +214,22 @@ class AppConfig:
         self.olson_encoding = olson_src.get("encoding", "utf-8-sig")
         self.olson_delimiter = olson_src.get("delimiter", ",")
         olson_out = olson_cfg.get("output_file", "LOC_OLSON_ID_STG.csv")
-        self.olson_output = (self.output_dir / olson_out) if str(olson_out).startswith("stage/") else (self.stage_dir / Path(olson_out).name)
+        if str(olson_out).startswith("stage/"):
+            self.olson_output = self.output_dir / olson_out
+        else:
+            self.olson_output = self.stage_dir / Path(olson_out).name
         self.olson_log = BASE_DIR / logs.get("olson", "logs/stage_olson.log")
         # Olson PIP (pip-only from enriched STG, no input csv)
         olson_pip_cfg = self.config.get("olson_pip", {})
         olson_pip_out = olson_pip_cfg.get("output_file", "LOC_OLSON_ID_PIP_STG.csv")
-        self.olson_pip_output = (self.output_dir / olson_pip_out) if str(olson_pip_out).startswith("stage/") else (self.stage_dir / Path(olson_pip_out).name)
+        if str(olson_pip_out).startswith("stage/"):
+            self.olson_pip_output = self.output_dir / olson_pip_out
+        else:
+            self.olson_pip_output = self.stage_dir / Path(olson_pip_out).name
         self.olson_pip_log = BASE_DIR / logs.get("olson_pip", "logs/stage_olson_pip.log")
-        # Ignore report (same 9 cols as error report)
+        # Ignore report (same cols as error report)
         ignores_cfg = self.config.get("ignores", {})
         self.ignore_report = self.output_dir / ignores_cfg.get("report_file", "IGNORE_REPORT.csv")
-        self.ignore_headers = ignores_cfg.get("headers", self.config.get("errors", {}).get("headers", []))
         meta = self.config["outputs"]["metadata"]
         self.metadata_csv = BASE_DIR / meta["file"]
         self.metadata_columns = meta["columns"]
