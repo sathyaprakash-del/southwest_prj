@@ -44,16 +44,9 @@ def run_batch_id() -> str:
 
 
 def timestamped_path(base: Path, batch_id: str) -> Path:
-    """LOC_X_STG.csv -> LOC_X_STG_<YYYYMMDD_HHMM>.csv"""
+    """LOC_X_STG.csv -> LOC_X_STG_<YYYYMMDDHHMM>.csv"""
     base = Path(base)
     return base.parent / f"{base.stem}_{batch_id}{base.suffix}"
-
-
-def latest_stage_file(pattern: str) -> Path | None:
-    """Latest timestamped stage file matching glob pattern (e.g. LOC_AIRPORT_STG_*.csv)."""
-    from pathlib import Path as _P
-    files = sorted(_P(__file__).resolve().parent.parent.glob(pattern))
-    return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
 
 class GeoValidator:

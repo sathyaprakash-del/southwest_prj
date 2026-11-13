@@ -67,7 +67,6 @@ class TestCounts(unittest.TestCase):
         self.assertNotIn("SRC_LOC", self.bts.columns)
 
     def test_batchid_format(self):
-        import re
         for v in self.bts["BATCHID"].unique():
             self.assertRegex(v, r"^\d{12}$", f"BATCHID {v} not YYYYMMDDHHMM")
 

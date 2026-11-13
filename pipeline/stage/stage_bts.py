@@ -1,8 +1,8 @@
+"""Stage BTS enrichment (class-based, utils shared). Missing stays inside BTS STG."""
 import logging
 import sys
 from pathlib import Path
 
-"""Stage BTS enrichment (class-based, utils shared). Missing stays inside BTS STG."""
 import pandas as pd
 
 try:
@@ -117,21 +117,17 @@ def load_bts(bts_csv: Path = BTS_CSV) -> pd.DataFrame:
 
 
 def load_airport_stg(airport_stg: Path = AIRPORT_STG) -> pd.DataFrame:
-    from utils.common import latest_stage_file
+    from utils.common import BASE_DIR
     # timestamped outputs: pick latest LOC_AIRPORT_STG_*.csv, fallback fixed path
-    latest = latest_stage_file("output/stage/LOC_AIRPORT_STG_*.csv")
-    # exclude jep_only backups from candidate? latest_stage_file returns max mtime;
-    # jep_only backup written just before overwrite in same run could be newer –
-    # prefer non-backup files
+    # (exclude jep_only backups which are written just before overwrite)
+    latest = None
     try:
-        from pathlib import Path as _P
-        from utils.common import BASE_DIR
         cands = sorted((BASE_DIR / "output" / "stage").glob("LOC_AIRPORT_STG_*.csv"))
         cands = [p for p in cands if "jep_only" not in p.name]
         if cands:
             latest = max(cands, key=lambda p: p.stat().st_mtime)
     except (OSError, ValueError):
-        pass
+        latest = None
     src = latest if latest is not None else airport_stg
     log.info("Loading Jeppesen staging %s", src)
     df = pd.read_csv(src, dtype=str, keep_default_na=False)

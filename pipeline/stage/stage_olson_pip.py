@@ -68,7 +68,7 @@ class OlsonPipLoader:
         except ImportError as e:
             raise RuntimeError(f"timezonefinder lib required: {e}")
         # read latest timestamped enriched STG
-        from utils.common import latest_stage_file, BASE_DIR
+        from utils.common import BASE_DIR
         try:
             cands = sorted((BASE_DIR / "output" / "stage").glob("LOC_AIRPORT_STG_*.csv"))
             cands = [p for p in cands if "jep_only" not in p.name]
@@ -121,7 +121,6 @@ class OlsonPipLoader:
         df = pd.DataFrame(rows, columns=["BATCHID", "ICAO_CDE", "OLSON_ID", "RAWOFFSET"])
         if not df.empty:
             df = df.astype(str)
-        from utils.common import timestamped_path
         out_csv = timestamped_path(OUTPUT_CSV, batch_id)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out_csv, index=False)

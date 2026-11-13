@@ -8,7 +8,6 @@ No separate olson_errors.csv.
 import logging
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -144,7 +143,6 @@ class OlsonLoader:
         df = pd.DataFrame(rows, columns=cols)
         if not df.empty:
             df = df.astype(str)
-        from utils.common import timestamped_path
         out_csv = timestamped_path(OUTPUT_CSV, batch_id)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out_csv, index=False)
